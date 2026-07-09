@@ -10,8 +10,8 @@
 # with below. `phone` is YOUR WhatsApp number with country code.
 whatsapp:
   enabled: false          # set to true once you've added your phone + apikey below
-  phone: "x"      # e.g. "+447712345678"
-  apikey: "x"    # e.g. "123456"
+  phone: "WHATSAPP_PHONE"      # e.g. "+447712345678"
+  apikey: "WHATSAPP_APIKEY"    # e.g. "123456"
 
 # ------------------------------------------------------------------
 # The bot outputs TWO tiers:
