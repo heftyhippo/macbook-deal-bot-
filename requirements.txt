@@ -1,0 +1,10 @@
+mercapi>=0.2
+pyyaml
+requests
+beautifulsoup4
+rich
+curl_cffi
+playwright>=1.40
+# for the Swappa source only (stealth Chrome that passes its Cloudflare wall);
+# Google Chrome itself must be installed too
+patchright

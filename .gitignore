@@ -1,0 +1,18 @@
+# scratch / output files - no need to store these in the repo
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+# Chrome profile the Swappa scanner uses to hold its Cloudflare cookie
+.swappa_chrome_profile/
+# background-watch log (see com.macdeals.watch.plist)
+macdeals.log
+deals.html
+*.csv
+debug_*.html
+yahoo_debug.html
+
+# alert-dedupe memory: local file on your machine; in the cloud it lives in
+# the GitHub Actions cache, so it never needs to be in the repo
+seen_items.db
