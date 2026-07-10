@@ -67,20 +67,28 @@ def load_config() -> dict:
 
 SCANNERS = [
     # fastest first: alerts fire per source, so a Mercari find must not
-    # wait for Swappa's browser
+    # wait for Swappa's browser or Buyee's bot-check
     ("mercari", "mercari", lambda cfg, dbg: sources.scan_mercari(cfg)),
     ("ebay_uk", "ebay uk", sources.scan_ebay_uk),
     ("ebay_us", "ebay us", sources.scan_ebay_us),
+    ("ebay_de", "ebay germany", sources.scan_ebay_de),
+    ("gumtree", "gumtree uk", sources.scan_gumtree),
+    ("craigslist", "craigslist us", sources.scan_craigslist),
     ("rakuma", "rakuma", sources.scan_rakuma),
+    ("paypay", "paypay flea market", sources.scan_paypay),
     ("yahoo", "yahoo auctions", sources.scan_yahoo),
     ("swappa", "swappa", sources.scan_swappa),
 ]
 
 CYCLE_FETCHERS = {"mercari": sources.fetch_mercari_cycles,
                   "rakuma": sources.fetch_rakuma_cycles,
+                  "paypay": sources.fetch_paypay_cycles,
                   "yahoo": sources.fetch_yahoo_cycles,
                   "ebay_us": sources.fetch_ebay_us_cycles,
                   "ebay_uk": sources.fetch_ebay_uk_cycles,
+                  "ebay_de": sources.fetch_ebay_de_cycles,
+                  "craigslist": sources.fetch_craigslist_cycles,
+                  "gumtree": sources.fetch_gumtree_cycles,
                   "swappa": sources.fetch_swappa_cycles}
 
 
@@ -108,8 +116,8 @@ def run_scan(cfg: dict, send_alerts: bool, debug: bool, demo: bool,
             if pricing.is_excluded(l.title, cfg["filters"]["exclude_keywords"]):
                 continue
             pricing.parse_listing_specs(l)
-            if not l.chip:
-                continue
+            if not l.family:
+                continue      # not a tracked product (or pre-2022 / an Air)
             pricing.match_model(l, cfg["models"], cfg)
             if not l.model_id:
                 continue
@@ -127,15 +135,17 @@ def run_scan(cfg: dict, send_alerts: bool, debug: bool, demo: bool,
                 continue
             out.append(l)
         out.sort(key=lambda x: x.savings_pct, reverse=True)
-        # enrich the most promising with battery-cycle info from the listing
-        # page - "promising" = within 8 points of its own region's alert bar
+        # enrich the most promising MacBooks with battery-cycle info from the
+        # listing page (only MacBooks have a battery worth checking) -
+        # "promising" = within 8 points of its own region's alert bar
         for l in out:
             if budget <= 0 or demo:
                 break
-            if l.savings_pct < pricing.alert_thresholds(cfg, l.source)["min"] - 8:
+            if l.savings_pct < pricing.alert_thresholds(
+                    cfg, l.source, l.family)["min"] - 8:
                 break         # sorted by savings - the rest are further away
-            if l.cycles is not None:
-                continue      # the title already told us - don't spend budget
+            if l.family != "macbook" or l.cycles is not None:
+                continue
             l.cycles = CYCLE_FETCHERS[l.source](l.item_id)
             budget -= 1
             time.sleep(1.0)
@@ -148,9 +158,10 @@ def run_scan(cfg: dict, send_alerts: bool, debug: bool, demo: bool,
                     break     # sorted desc - nothing below can alert anywhere
                 if l.grade not in ("resale", "personal"):
                     continue  # "good" listings live in the value section only
-                if l.savings_pct < pricing.alert_thresholds(cfg, l.source)["min"]:
-                    continue  # below this REGION's bar (JP is higher)
-                if (l.cycles is not None
+                if l.savings_pct < pricing.alert_thresholds(
+                        cfg, l.source, l.family)["min"]:
+                    continue  # below this REGION's bar for this product class
+                if (l.family == "macbook" and l.cycles is not None
                         and l.cycles > pricing.max_cycles_for(l.grade, cfg)):
                     continue
                 if not store.should_alert(l.item_id, int(l.price),
@@ -241,12 +252,15 @@ def run_watch(cfg: dict, interval: int | None, debug: bool) -> None:
           + ". (In a terminal, Ctrl+C stops it; in background mode, "
             "`python3 macdeals.py background stop`.)")
     bars = ", ".join(
-        f"{r.upper()} {pricing.alert_thresholds(cfg, s)['min']:.0f}%+"
-        for r, s in (("uk", "ebay_uk"), ("us", "ebay_us"), ("jp", "mercari")))
-    store.whatsapp_send(cfg, f"👀 MacBook deal bot is watching. Full scan of "
+        f"{r.upper()} {pricing.alert_thresholds(cfg, src)['min']:.0f}%+"
+        for r, src in (("uk", "ebay_uk"), ("us", "ebay_us"),
+                       ("eu", "ebay_de"), ("jp", "mercari")))
+    kbless = pricing.alert_thresholds(cfg, "mercari", "mac_mini")["min"]
+    store.whatsapp_send(cfg, f"👀 Apple deal bot is watching. Full scan of "
                              f"{', '.join(s['sources'])} every {full_min} min; "
                              f"quick pass of {', '.join(fast_srcs)} every "
-                             f"{fast_min} min. Alerting at {bars} savings.")
+                             f"{fast_min} min. Alerting at {bars} savings "
+                             f"(keyboardless products: JP {kbless:.0f}%+).")
     fast_cfg = dict(cfg)
     fast_cfg["scan"] = dict(s)
     fast_cfg["scan"]["sources"] = fast_srcs
@@ -420,14 +434,22 @@ def demo_listings() -> list[pricing.Listing]:
         L("LADEMO12345", "swappa", "MacBook Pro 14 M4 Pro 512GB 24GB - Mint (Swappa)", 1379, currency="USD", condition="Mint", grade="personal"),
         L("m66666666666", "mercari", "【極美品】MacBook Pro 14インチ M4 Pro 24GB 512GB 充放電回数45回", 175000, condition="目立った傷や汚れなし", grade="personal"),
         L("345678901234", "ebay_us", "Apple MacBook Pro 16\" M4 Pro 24GB 512GB - Like New, only 21 cycles", 1499, currency="USD", condition="Used (seller: like new)", grade="personal"),
-        L("456789012345", "ebay_uk", "Apple MacBook Pro 14\" M4 Pro 24GB 512GB Space Black - 120 cycles", 1275, currency="GBP", condition="Used", grade="good"),
-        L("m77777777777", "mercari", "MacBook Pro 16インチ M3 Pro 18GB 512GB 充放電回数210回", 152000, condition="やや傷や汚れあり", grade="good"),
+        # the wider 2026 scope: desktops, displays and iPads
+        L("m88888888888", "mercari", "【新品未使用】Mac Studio M1 Max 32GB 512GB", 75000, condition="新品、未使用"),
+        L("x3456789012", "yahoo", "iMac 24インチ M4 16GB 256GB ブルー 新品未開封", 120000, condition="未使用"),
+        L("p1234567890z", "paypay", "iPad Air 13インチ M4 128GB Wi-Fi 未使用", 68000, condition="未使用"),
+        L("567890123456", "ebay_de", "Apple Mac mini M4 16GB 256GB - NEU versiegelt", 399, currency="EUR", condition="Brand New"),
+        L("cl-demo-1", "craigslist", "New Sealed iPad Pro 13 M4 256GB Space Black", 650, currency="USD", condition="seller says new/sealed"),
+        L("1800109157", "gumtree", "Apple Studio Display 27 inch - brand new, still boxed", 600, currency="GBP", condition="seller says new/sealed"),
+        L("m99999999999", "mercari", "Mac mini M4 Pro 24GB 512GB 未使用に近い", 138000, condition="未使用に近い"),
     ]
     for l in demo:
-        if l.source in ("ebay_us", "swappa"):
+        if l.source in ("ebay_us", "swappa", "craigslist"):
             l.keyboard = "US"
-        elif l.source == "ebay_uk":
+        elif l.source in ("ebay_uk", "gumtree"):
             l.keyboard = "UK"
+        elif l.source == "ebay_de":
+            l.keyboard = "EU"
     return demo
 
 
@@ -441,7 +463,7 @@ def run_selftest() -> int:
 
     cfg = load_config()
     check("config.yaml loads", isinstance(cfg, dict) and "models" in cfg)
-    check("19 models defined", len(cfg["models"]) == 19)
+    check("43 models defined", len(cfg["models"]) == 43)
 
     l = pricing.Listing("m1", "mercari", "MacBook Pro 14インチ M4 Pro 24GB 512GB 新品", 200000)
     pricing.parse_listing_specs(l)
@@ -594,7 +616,73 @@ def run_selftest() -> int:
     check("unicode-hyphen core counts ignored, real 14.2 size kept",
           l6b.size == 14 and not l6b.size_guessed)
 
-    rates = {"JPY": 195.0, "USD": 1.30, "GBP": 1.0}
+    # ---- the 2026 wide-scope families ----
+    fam_cases = [
+        ("Mac Studio M1 Ultra 64GB 1TB 新品未開封", "mac_studio", "M1 ULTRA", "studio-m1ultra"),
+        ("Apple Mac Studio M4 Max 36GB 512GB sealed", "mac_studio", "M4 MAX", "studio-m4max"),
+        ("Mac mini M4 Pro 24GB 512GB NEU", "mac_mini", "M4 PRO", "mini-m4pro"),
+        ("Apple Mac mini M2 8GB 256GB 新品", "mac_mini", "M2", "mini-m2"),
+        ("iMac 24インチ M4 16GB 256GB ブルー", "imac", "M4", "imac-m4"),
+        ("Apple Mac Pro M2 Ultra Tower 64GB 1TB", "mac_pro", "M2 ULTRA", "macpro-m2ultra"),
+        ("Apple Studio Display 27インチ 標準ガラス", "display", "", "studio-display"),
+        ("iPad Pro 11インチ 第4世代 128GB Wi-Fi 未使用", "ipad_pro", "M2", "ipadpro-m2-11"),
+        ("iPad Pro 12.9 M2 256GB Space Gray", "ipad_pro", "M2", "ipadpro-m2-129"),
+        ("iPad Pro 13インチ M4 256GB", "ipad_pro", "M4", "ipadpro-m4-13"),
+        ("iPad Air 13-inch M4 128GB Blue NEW", "ipad_air", "M4", "ipadair-m4-13"),
+    ]
+    for title, fam, chip, mid in fam_cases:
+        lf = pricing.Listing("t", "mercari", title, 1)
+        pricing.parse_listing_specs(lf)
+        pricing.match_model(lf, cfg["models"], cfg)
+        check(f"{fam}: '{title[:36]}...' -> {mid}",
+              lf.family == fam and lf.chip == chip and lf.model_id == mid)
+    for title in ("iPad mini 7 A17 Pro 128GB 新品",     # no tracked family
+                  "iPad 第10世代 64GB",                  # base iPad
+                  "iMac 24 M1 2021 8GB",                 # pre-2022 chip
+                  "Mac Studio 2027 M9 Hyper"):           # unknown chip
+        lf = pricing.Listing("t", "mercari", title, 1)
+        pricing.parse_listing_specs(lf)
+        check(f"out of scope: '{title[:30]}'", lf.family == "" or lf.model_id is None)
+    lmp = pricing.Listing("t", "ebay_uk", "Apple Mac Pro M2 Ultra", 3000, currency="GBP")
+    pricing.parse_listing_specs(lmp)
+    check("'Mac Pro' not confused with 'MacBook Pro'", lmp.family == "mac_pro")
+    check("keyboardless family gets keyboard n/a", lmp.keyboard == "n/a")
+    check("regional bars split by keyboard: mini JP 42 / macbook JP 50",
+          pricing.alert_thresholds(cfg, "mercari", "mac_mini")["min"] == 42
+          and pricing.alert_thresholds(cfg, "mercari", "macbook")["min"] == 50)
+    check("EU bars: macbook 38 / keyboardless 35",
+          pricing.alert_thresholds(cfg, "ebay_de", "macbook")["min"] == 38
+          and pricing.alert_thresholds(cfg, "ebay_de", "ipad_pro")["min"] == 35)
+    check("wanted-ad filter (classifieds)",
+          pricing.is_wanted_ad("WANTED MACBOOK PRO 16 CASH TODAY")
+          and pricing.is_wanted_ad("We Buy MacBooks & iPads")
+          and not pricing.is_wanted_ad("Unwanted gift: sealed Mac mini M4"))
+    check("classifieds grading: sealed->resale, like-new->personal, else None",
+          sources._en_grade("New Sealed Mac Studio M4 Max") == "resale"
+          and sources._en_grade("iPad Pro 13 M4 - like new, boxed") == "personal"
+          and sources._en_grade("Mac mini M4 good condition") is None)
+    check("eBay.de price format parsed (EUR 1.234,56)",
+          sources._first_price_in("EUR 1.234,56", "EUR") == 1234.56)
+
+    rates = {"JPY": 195.0, "USD": 1.30, "GBP": 1.0, "EUR": 1.17}
+
+    # EU landed-cost maths: €999 Mac mini from eBay DE
+    cost_eu = pricing.landed_cost_gbp(999, "ebay_de", cfg, rates, "mac_mini")
+    exp_eu = (999 + cfg["costs"]["eu_shipping_eur_family"]["mac_mini"]) / 1.17 * 1.20 + 12
+    check(f"EU landed cost maths (£{cost_eu:.2f})", abs(cost_eu - exp_eu) < 0.01)
+    # family-aware shipping: an iPad from JP ships cheaper than a display
+    cost_ipad = pricing.landed_cost_gbp(100000, "mercari", cfg, rates, "ipad_pro")
+    cost_disp = pricing.landed_cost_gbp(100000, "mercari", cfg, rates, "display")
+    check("family shipping: iPad < display on the same JP price",
+          cost_ipad < cost_disp)
+    # like-new flip target: personal-grade stock sells at like-new money
+    lpf = pricing.Listing("t", "ebay_uk", "Apple Mac mini M4 Pro 24GB 512GB - mint, as new",
+                          800, currency="GBP", grade="personal")
+    pricing.parse_listing_specs(lpf)
+    pricing.match_model(lpf, cfg["models"], cfg)
+    pricing.score(lpf, cfg, rates)
+    check("personal-grade flip targets like-new price (below UK-new avg)",
+          0 < lpf.flip_target_gbp < lpf.uk_avg_gbp and lpf.flip_profit_gbp != 0)
 
     # landed-cost maths: ¥218,000 mercari at 195 JPY/GBP, defaults
     cost = pricing.landed_cost_gbp(218000, "mercari", cfg, rates)

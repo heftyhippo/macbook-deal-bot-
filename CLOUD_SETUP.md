@@ -58,7 +58,7 @@ Go to https://github.com and sign up. It's free. Verify your email.
 2. Name it anything, e.g. `macbook-deal-bot`.
 3. Choose **Public**. (Public repos get *unlimited* free Actions minutes and
    free GitHub Pages. The only things visible to others are the bot's code
-   and the dashboard of MacBook deals — nothing personal. Your WhatsApp
+   and the dashboard of Apple deals — nothing personal. Your WhatsApp
    key stays in Secrets.)
 4. Leave everything else as-is and click **Create repository**.
 
@@ -107,7 +107,7 @@ while open.
 
 1. Click the **Actions** tab. If GitHub asks, click the green button to
    **enable workflows** for this repo.
-2. In the left sidebar click **MacBook deal scan**.
+2. In the left sidebar click **Apple deal scan**.
 3. Click **Run workflow → Run workflow** (this triggers one immediately
    instead of waiting for the schedule).
 4. After ~2–4 minutes the run finishes. Click it → click the **scan** job to
@@ -126,7 +126,7 @@ your laptop can be off.**
 (click the file → pencil icon) and change the `cron` line.
 `"*/30 * * * *"` = every 30 min, `"0 * * * *"` = hourly.
 
-**Stop it:** Actions tab → MacBook deal scan → the **•••** menu →
+**Stop it:** Actions tab → Apple deal scan → the **•••** menu →
 **Disable workflow**. Re-enable the same way.
 
 **Adjust models, prices, thresholds:** edit `config.yaml` on GitHub the same
@@ -150,19 +150,21 @@ GitHub's computers live in a data centre, and some sites are stricter toward
 data-centre addresses than toward home broadband:
 
 - **Mercari usually works in the cloud** (app-style data feed) — and it's
-  the bulk of the JP listings.
-- **Buyee (Yahoo + Rakuma) and/or eBay may get blocked** from GitHub's
-  address ranges. If so, those sources just log a failure and are skipped —
-  the scan still completes and still alerts on whatever works.
-- **Swappa will NOT work in the cloud, full stop** — it needs a real Chrome
-  on a home connection, so the workflow doesn't even try it. Your local
-  scans still cover it.
+  the bulk of the JP listings. The three eBay sites (UK/US/DE) usually work
+  too.
+- **Buyee (Yahoo + Rakuma + PayPay) may get blocked** from GitHub's address
+  ranges. If so, those sources just log a failure and are skipped — the
+  scan still completes and still alerts on whatever works.
+- **Swappa, Craigslist and Gumtree don't run in the cloud** — Swappa needs
+  a real Chrome on a home connection, and the classifieds sites block/
+  rate-limit datacenter addresses — so the workflow doesn't try them. Your
+  local scans still cover all three.
 
 **The test run in Step 6 tells you which sources work — read the log.** To
 silence sources that always fail in the cloud, add a repository *Variable*
 (Settings → Secrets and variables → Actions → **Variables** tab → New
 variable) named `SOURCES` listing only the working ones, e.g.
-`mercari,ebay_uk,ebay_us`. Your **local** bot still scans everything.
+`mercari,ebay_uk,ebay_us,ebay_de`. Your **local** bot still scans everything.
 
 If you ever want the blocked sources in the cloud too, the fallback is a
 small always-free VM (Oracle Cloud's Always-Free tier) running the full

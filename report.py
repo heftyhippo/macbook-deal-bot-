@@ -14,9 +14,8 @@ from pricing import Listing
 
 # the two output tiers, in display order
 TIERS = [
-    ("resale", "RESALE-GRADE - new / unused (arbitrage-safe)"),
-    ("personal", "PRACTICALLY NEW - buy-to-use (used, zero visible wear, "
-                 "savings vs buying new)"),
+    ("resale", "NEW / UNUSED - resale-grade stock"),
+    ("personal", "LIKE NEW - zero visible wear (sells at like-new money)"),
 ]
 
 
@@ -27,12 +26,12 @@ def console_table(listings: list[Listing], best_value: list[Listing],
         from rich.table import Table
     except ImportError:
         for l in listings:
-            print(f"{l.savings_pct:+6.1f}%  {l.model_label:10s} GBP{l.landed_gbp:8.0f} "
+            print(f"{l.savings_pct:+6.1f}%  {l.model_label:16s} GBP{l.landed_gbp:8.0f} "
                   f"(UK ~GBP{l.uk_avg_gbp:.0f})  {l.price_str}  {l.title[:60]}")
         return
     con = Console()
     con.print(f"\n[bold]FX:[/bold] 1 GBP = {rates['JPY']:.1f} JPY = "
-              f"{rates['USD']:.3f} USD ({fx_note})")
+              f"{rates['USD']:.3f} USD = {rates.get('EUR', 0):.3f} EUR ({fx_note})")
     if not listings and not best_value:
         con.print("[dim]No matching listings this scan.[/dim]\n")
         return
@@ -42,13 +41,13 @@ def console_table(listings: list[Listing], best_value: list[Listing],
             continue
         tab = Table(title=tier_title, show_lines=False, expand=True)
         tab.add_column("Save", justify="right", style="bold green", no_wrap=True)
+        tab.add_column("Profit", justify="right", style="bold cyan", no_wrap=True)
         tab.add_column("Model", no_wrap=True)
         tab.add_column("Specs", no_wrap=True)
         tab.add_column("Src", no_wrap=True)
         tab.add_column("Price", justify="right", no_wrap=True)
         tab.add_column("Landed est.", justify="right", no_wrap=True)
         tab.add_column("UK avg", justify="right", no_wrap=True)
-        tab.add_column("Cond/cycles", no_wrap=True)
         tab.add_column("Title / flags", overflow="fold", ratio=3)
         for l in group:
             spec = "/".join(x for x in [
@@ -56,20 +55,22 @@ def console_table(listings: list[Listing], best_value: list[Listing],
                 (f"{l.storage_gb // 1024}TB" if l.storage_gb and l.storage_gb >= 1024
                  else (f"{l.storage_gb}GB" if l.storage_gb else "?")),
             ])
-            cyc = f"{l.cycles}cyc" if l.cycles is not None else "cyc?"
-            cond = (l.condition or "")[:14] + f" {cyc}"
             flags = ("  [yellow]" + "; ".join(l.flags) + "[/yellow]") if l.flags else ""
             save = f"{l.savings_pct:+.0f}%"
+            profit = (f"£{l.flip_profit_gbp:,.0f}"
+                      if l.grade in ("resale", "personal") else "-")
             # highlight rows that clear their own region's alert bar
-            hot = l.savings_pct >= pricing.alert_thresholds(cfg, l.source)["min"]
-            tab.add_row(save, l.model_label, spec, l.source, l.price_str,
-                        f"£{l.landed_gbp:,.0f}", f"£{l.uk_avg_gbp:,.0f}",
-                        cond, html_escape_rich(l.title[:90]) + flags,
+            hot = l.savings_pct >= pricing.alert_thresholds(
+                cfg, l.source, l.family)["min"]
+            tab.add_row(save, profit, l.model_label, spec, l.source,
+                        l.price_str, f"£{l.landed_gbp:,.0f}",
+                        f"£{l.uk_avg_gbp:,.0f}",
+                        html_escape_rich(l.title[:90]) + flags,
                         style="bold red" if hot else "")
         con.print(tab)
     if best_value:
         tab = Table(title="BEST VALUE - top deals for price RELATIVE TO "
-                          "CONDITION (all markets, all tiers)",
+                          "CONDITION (only when value.enabled is on)",
                     show_lines=False, expand=True)
         tab.add_column("Deal", justify="right", style="bold cyan", no_wrap=True)
         tab.add_column("Model", no_wrap=True)
@@ -86,8 +87,6 @@ def console_table(listings: list[Listing], best_value: list[Listing],
                         f"£{l.value_landed_gbp:,.0f}", f"£{l.fair_gbp:,.0f}",
                         html_escape_rich(l.title[:80]))
         con.print(tab)
-        con.print(f"[dim]...and {max(len(best_value) - 15, 0)} more in "
-                  f"deals.html's Buy-for-myself view.[/dim]")
     con.print("[dim]Full clickable links are in deals.html (open it in your browser).[/dim]\n")
 
 
@@ -102,11 +101,13 @@ def html_escape_rich(s: str) -> str:
 # ----------------------------------------------------------------------------
 
 def _dash_record(l: Listing, cfg: dict) -> dict:
-    t = pricing.alert_thresholds(cfg, l.source)
+    t = pricing.alert_thresholds(cfg, l.source, l.family)
+    flip = l.grade in ("resale", "personal")
     return {
         "key": f"{l.source}:{l.item_id}",
         "src": l.source,
         "region": pricing.region_of(l.source),
+        "fam": l.family or "macbook",
         "grade": l.grade,
         "title": l.title,
         "model": l.model_label,
@@ -121,11 +122,9 @@ def _dash_record(l: Listing, cfg: dict) -> dict:
         "landed": round(l.landed_gbp),
         "ukavg": round(l.uk_avg_gbp),
         "save": l.savings_pct,
-        "fair": round(l.fair_gbp) if l.fair_gbp else None,
-        "allin": round(l.value_landed_gbp) if l.value_landed_gbp else None,
-        "val": l.value_pct if l.fair_gbp else None,
-        "profit": round(l.flip_profit_gbp) if l.grade == "resale" else None,
-        "alert": bool(l.savings_pct >= t["min"] and l.grade in ("resale", "personal")),
+        "profit": round(l.flip_profit_gbp) if flip else None,
+        "sellat": round(l.flip_target_gbp) if flip and l.flip_target_gbp else None,
+        "alert": bool(l.savings_pct >= t["min"] and flip),
         "flags": list(l.flags),
         "links": [[label, url] for label, url in l.market_links],
     }
@@ -140,18 +139,17 @@ def write_html(listings: list[Listing], best_value: list[Listing], path: str,
         if k not in recs:
             recs[k] = _dash_record(l, cfg)
             order.append(k)
-    # rank within the buy-for-myself (best value) view; None = not ranked
-    for i, l in enumerate(best_value):
-        recs[f"{l.source}:{l.item_id}"]["me"] = i
-    for r in recs.values():
-        r.setdefault("me", None)
     data = {
         "generated": int(_time.time()),
         "generated_str": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "fx": {"JPY": round(rates["JPY"], 1), "USD": round(rates["USD"], 3)},
+        "fx": {"JPY": round(rates["JPY"], 1), "USD": round(rates["USD"], 3),
+               "EUR": round(rates.get("EUR", 0), 3)},
         "bars": {reg: pricing.alert_thresholds(cfg, src)["min"]
                  for reg, src in (("uk", "ebay_uk"), ("us", "ebay_us"),
-                                  ("jp", "mercari"))},
+                                  ("eu", "ebay_de"), ("jp", "mercari"))},
+        "bars_nokb": {reg: pricing.alert_thresholds(cfg, src, "mac_mini")["min"]
+                      for reg, src in (("uk", "ebay_uk"), ("us", "ebay_us"),
+                                       ("eu", "ebay_de"), ("jp", "mercari"))},
         "friction": float(cfg.get("resale", {}).get("sell_friction_pct", 5)),
         "items": [recs[k] for k in order],
     }
@@ -164,7 +162,7 @@ _DASH_TEMPLATE = r"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MacBook Deal Bot</title>
+<title>Apple Deal Bot</title>
 <style>
 :root{
   --bg:#f5f6f8; --card:#ffffff; --text:#191c20; --muted:#69707a;
@@ -202,7 +200,7 @@ nav button.on{background:var(--accent);color:#fff}
 .filters input[type=search],.filters select{font:inherit;color:var(--text);
   background:var(--card);border:1px solid var(--line);border-radius:8px;
   padding:7px 10px}
-.filters input[type=search]{min-width:220px;flex:1;max-width:340px}
+.filters input[type=search]{min-width:200px;flex:1;max-width:320px}
 .filters label{color:var(--muted);font-size:14px;display:flex;
   align-items:center;gap:5px;white-space:nowrap;cursor:pointer}
 .tablewrap{background:var(--card);border:1px solid var(--line);
@@ -228,7 +226,6 @@ tbody tr:hover{background:var(--rowhover)}
   background:var(--amber-bg);color:var(--amber)}
 .chip.red{background:var(--red-bg);color:var(--red);font-weight:600}
 .chip.blue{background:var(--blue-bg);color:var(--blue);font-weight:700}
-.chip.grey{background:var(--line);color:var(--muted)}
 .star{color:#e3a008;font-size:14px}
 .mkt{white-space:nowrap}
 .grade{font-size:12px;font-weight:600;white-space:nowrap}
@@ -260,10 +257,9 @@ footer{max-width:1280px;margin:18px auto 0;padding:0 18px 30px;
 </style></head>
 <body>
 <header>
-  <div class="brand">💻 MacBook Deal Bot</div>
+  <div class="brand">🍏 Apple Deal Bot</div>
   <nav id="tabs">
-    <button data-tab="me">🎯 Buy for myself</button>
-    <button data-tab="flip">💰 Resell for profit</button>
+    <button data-tab="flip">💰 Best flips</button>
     <button data-tab="sav">💸 Biggest savings</button>
   </nav>
   <div class="meta" id="meta"></div>
@@ -272,6 +268,13 @@ footer{max-width:1280px;margin:18px auto 0;padding:0 18px 30px;
   <p class="explain" id="explain"></p>
   <div class="filters">
     <input id="q" type="search" placeholder="Search model or title…">
+    <select id="ffam">
+      <option value="">All products</option>
+      <option value="macbook">MacBook Pro</option>
+      <option value="desktop">Mac desktops</option>
+      <option value="ipad">iPads</option>
+      <option value="display">Studio Display</option>
+    </select>
     <select id="fmodel"><option value="">All models</option></select>
     <select id="fmarket"><option value="">All markets</option></select>
     <label><input type="checkbox" id="fjis"> hide JIS keyboards</label>
@@ -284,14 +287,15 @@ footer{max-width:1280px;margin:18px auto 0;padding:0 18px 30px;
 </div>
 <footer>
   <b>How the numbers work.</b> “Landed” = item price + proxy/forwarder fees +
-  shipping + 20% UK import VAT + courier handling (UK listings: just postage).
-  “All-in” additionally prices battery wear pro-rata (cycles ÷ 1000 × £249).
-  “Fair UK value” is what that model costs in the UK <i>in that condition</i>:
-  new = UK average, good = eBay UK sold median, like-new = midpoint.
-  Flip profit assumes reselling at the UK average minus selling friction.
-  Estimates are deliberately slightly pessimistic — always sanity-check the
-  listing (photos, cycle count, seller) before buying. ★ = clears your
-  WhatsApp alert bar.
+  shipping (scaled to the product — an iPad posts cheap, a 27" display
+  doesn't) + 20% UK import VAT + courier handling; UK listings just add
+  postage. “Sell at” is the UK going rate for that condition: new/unused
+  stock at the UK average, like-new stock at like-new money. Profit deducts
+  selling friction (postage, packaging, pricing to sell). Everything here is
+  near-new only — no worn stock. Estimates are deliberately slightly
+  pessimistic; always verify the listing (photos, seller, exact spec) before
+  buying. ★ = clears your WhatsApp alert bar. Classifieds rows (Craigslist /
+  Gumtree) have no buyer protection — treat as leads, not one-click buys.
 </footer>
 <script>const DATA = %%DATA%%;</script>
 <script>
@@ -302,12 +306,16 @@ const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",
   ">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt=n=>n==null?"–":"£"+Math.round(n).toLocaleString("en-GB");
 const MARKET={mercari:"🇯🇵 Mercari",yahoo:"🇯🇵 Yahoo Auctions",
-  rakuma:"🇯🇵 Rakuma",ebay_us:"🇺🇸 eBay US",swappa:"🇺🇸 Swappa",
-  ebay_uk:"🇬🇧 eBay UK"};
+  rakuma:"🇯🇵 Rakuma",paypay:"🇯🇵 PayPay Flea",ebay_us:"🇺🇸 eBay US",
+  swappa:"🇺🇸 Swappa",craigslist:"🇺🇸 Craigslist",ebay_uk:"🇬🇧 eBay UK",
+  gumtree:"🇬🇧 Gumtree",ebay_de:"🇩🇪 eBay DE"};
 const GRADE={resale:"New / unused",personal:"Like new",good:"Good"};
+const FAMGROUP={macbook:"macbook",mac_mini:"desktop",mac_studio:"desktop",
+  imac:"desktop",mac_pro:"desktop",display:"display",
+  ipad_pro:"ipad",ipad_air:"ipad"};
 
 let tab=(location.hash||"").replace("#","");
-if(tab!=="me"&&tab!=="flip"&&tab!=="sav")tab="me";
+if(tab!=="flip"&&tab!=="sav")tab="flip";
 let sortKey=null,sortDir=-1;
 
 /* ---- NEW-since-last-visit badges (localStorage) ---- */
@@ -329,9 +337,10 @@ function star(r){return r.alert?' <span class="star" title="clears your WhatsApp
 function machineCell(r){
   const spec=[r.ram?r.ram+"GB":null,
     r.ssd?(r.ssd>=1024?(r.ssd/1024)+"TB":r.ssd+"GB"):null,
-    r.kbd&&r.kbd!=="unknown"?r.kbd+" keyboard":null].filter(Boolean).join(" · ");
+    r.kbd&&r.kbd!=="unknown"&&r.kbd!=="n/a"?r.kbd+" keyboard":null]
+    .filter(Boolean).join(" · ");
   const chips=(r.flags||[]).map(f=>'<span class="chip'+
-    (/TOO-GOOD/.test(f)?" red":"")+'">'+esc(f)+"</span>").join("");
+    (/TOO-GOOD|no buyer protection/.test(f)?" red":"")+'">'+esc(f)+"</span>").join("");
   return '<div class="m1">'+esc(r.model)+star(r)+
     (isNew(r.key)?' <span class="chip blue">NEW</span>':"")+'</div>'+
     '<div class="m2">'+esc(spec||"spec not stated")+'</div>'+
@@ -339,20 +348,16 @@ function machineCell(r){
     (chips?'<div class="chips">'+chips+'</div>':"");
 }
 function condCell(r){
-  const cyc=r.cycles!=null?r.cycles+" cycles":"cycles ?";
-  return '<div class="grade '+r.grade+'">'+GRADE[r.grade]+'</div>'+
-    '<div class="sub">'+esc(cyc)+'</div>'+
+  const cyc=r.fam==="macbook"?
+    (r.cycles!=null?r.cycles+" cycles":"cycles ?"):"";
+  return '<div class="grade '+r.grade+'">'+(GRADE[r.grade]||r.grade)+'</div>'+
+    (cyc?'<div class="sub">'+esc(cyc)+'</div>':"")+
     '<div class="cond-t" title="'+esc(r.cond)+'">'+esc(r.cond)+'</div>';
 }
 function priceCell(r){
   return '<div class="money">'+esc(r.price)+(r.auction?" 🔨":"")+'</div>'+
     (r.auction?'<div class="sub">auction bid</div>':"")+
     (r.offer?'<div class="sub">or Best Offer</div>':"");
-}
-function valCell(r){
-  return '<span class="big '+dealCls(r.val,25,12)+'">'+
-    (r.val==null?"–":Math.round(r.val)+"% off")+'</span>'+
-    '<div class="sub">fair value '+fmt(r.fair)+'</div>';
 }
 function profitCell(r){
   const roi=r.profit!=null&&r.landed?Math.round(r.profit/r.landed*100):null;
@@ -366,6 +371,10 @@ function saveCell(r){
     (r.save>0?Math.round(r.save)+"% off":"+"+Math.abs(Math.round(r.save))+"% over")
     +'</span><div class="sub">vs UK avg '+fmt(r.ukavg)+'</div>';
 }
+function sellatCell(r){
+  return '<span class="money">'+fmt(r.sellat)+'</span>'+
+    '<div class="sub">'+(r.grade==="resale"?"as new":"as like-new")+'</div>';
+}
 function linksCell(r){
   return (r.links||[]).map(x=>'<a class="btn" target="_blank" rel="noopener" href="'
     +esc(x[1])+'">'+esc(x[0])+"</a>").join("");
@@ -373,32 +382,21 @@ function linksCell(r){
 
 /* ---- column sets ---- */
 const COLS={
- me:[
-  {l:"Deal",s:r=>r.val??-999,c:valCell},
-  {l:"Machine",s:r=>r.model,c:machineCell},
-  {l:"Condition",s:r=>r.cycles??9999,c:condCell},
-  {l:"Market",s:r=>r.src,c:r=>'<span class="mkt">'+(MARKET[r.src]||r.src)+'</span>'},
-  {l:"Price",s:r=>r.allin??r.landed,c:priceCell},
-  {l:"All-in cost",s:r=>r.allin??r.landed,
-   c:r=>'<span class="big money">'+fmt(r.allin??r.landed)+'</span><div class="sub">to your door</div>'},
-  {l:"Buy",s:null,c:linksCell},
- ],
  flip:[
   {l:"Est. profit",s:r=>r.profit??-9999,c:profitCell},
   {l:"Machine",s:r=>r.model,c:machineCell},
-  {l:"Condition",s:r=>r.cycles??9999,c:condCell},
+  {l:"Condition",s:r=>r.grade,c:condCell},
   {l:"Market",s:r=>r.src,c:r=>'<span class="mkt">'+(MARKET[r.src]||r.src)+'</span>'},
   {l:"Price",s:r=>r.landed,c:priceCell},
   {l:"Landed cost",s:r=>r.landed,
    c:r=>'<span class="big money">'+fmt(r.landed)+'</span><div class="sub">to your door</div>'},
-  {l:"UK resale value",s:r=>r.ukavg,
-   c:r=>'<span class="money">'+fmt(r.ukavg)+'</span><div class="sub">avg. for new</div>'},
+  {l:"Sell at",s:r=>r.sellat??0,c:sellatCell},
   {l:"Buy",s:null,c:linksCell},
  ],
  sav:[
   {l:"Saving",s:r=>r.save,c:saveCell},
   {l:"Machine",s:r=>r.model,c:machineCell},
-  {l:"Condition",s:r=>r.cycles??9999,c:condCell},
+  {l:"Condition",s:r=>r.grade,c:condCell},
   {l:"Market",s:r=>r.src,c:r=>'<span class="mkt">'+(MARKET[r.src]||r.src)+'</span>'},
   {l:"Price",s:r=>r.landed,c:priceCell},
   {l:"Landed cost",s:r=>r.landed,
@@ -409,33 +407,31 @@ const COLS={
  ]
 };
 const EXPLAIN={
- me:"Every buyable listing — any market, any condition down to “good” — ranked "+
-    "by how far its all-in UK cost (shipping, VAT and battery wear included) "+
-    "sits below the fair UK price for that model in that condition.",
- flip:"New / unused stock only: what you'd make buying at the landed cost and "+
-    "reselling at the UK average (minus "+DATA.friction+"% selling friction). "+
-    "Check the flags — an auction bid or a too-good price needs extra care.",
- sav:"New / unused and like-new machines ranked by the raw saving: landed "+
-    "cost vs the UK average price of a NEW unit. This is the exact number "+
-    "your WhatsApp alerts fire on (★ = clears the bar: UK/US "+DATA.bars.uk+
-    "%+, JP "+DATA.bars.jp+"%+)."
+ flip:"Every near-new find — new/unused or like-new, any market — ranked by "+
+    "estimated resale profit: sell at the UK going rate for its condition "+
+    "(minus "+DATA.friction+"% selling friction), buy at the landed cost with "+
+    "shipping, VAT and fees included. ★ = beats your WhatsApp alert bar.",
+ sav:"The same near-new stock ranked by the raw saving: landed cost vs the "+
+    "UK average price of a NEW unit — the number your alerts fire on. Bars: "+
+    "UK/US "+DATA.bars.uk+"%+, EU "+DATA.bars.eu+"%+, JP "+DATA.bars.jp+"%+ "+
+    "(keyboardless products: EU "+DATA.bars_nokb.eu+"%+, JP "+
+    DATA.bars_nokb.jp+"%+)."
 };
 
 /* ---- filtering + rendering ---- */
 function baseRows(){
-  if(tab==="me")
-    return DATA.items.filter(r=>r.me!=null).sort((a,b)=>a.me-b.me);
-  if(tab==="flip")
-    return DATA.items.filter(r=>r.grade==="resale").sort((a,b)=>(b.profit??-9e9)-(a.profit??-9e9));
-  return DATA.items.filter(r=>r.grade==="resale"||r.grade==="personal")
-    .sort((a,b)=>b.save-a.save);
+  const it=DATA.items.filter(r=>r.grade==="resale"||r.grade==="personal");
+  return tab==="flip"
+    ? it.sort((a,b)=>(b.profit??-9e9)-(a.profit??-9e9))
+    : it.sort((a,b)=>b.save-a.save);
 }
 function rows(){
   const q=$("#q").value.trim().toLowerCase();
-  const fm=$("#fmodel").value,fk=$("#fmarket").value;
+  const fm=$("#fmodel").value,fk=$("#fmarket").value,ff=$("#ffam").value;
   let it=baseRows().filter(r=>
     (!q||(r.model+" "+r.title).toLowerCase().includes(q))&&
     (!fm||r.model===fm)&&(!fk||r.src===fk)&&
+    (!ff||FAMGROUP[r.fam]===ff)&&
     (!$("#fjis").checked||r.kbd!=="JIS")&&
     (!$("#fauction").checked||!r.auction)&&
     (!$("#falert").checked||r.alert));
@@ -471,20 +467,19 @@ function render(){
 /* ---- header meta ---- */
 function meta(){
   const age=Math.max(0,Math.round((Date.now()/1000-DATA.generated)/60));
-  const nMe=DATA.items.filter(r=>r.me!=null).length;
-  const nFlip=DATA.items.filter(r=>r.grade==="resale").length;
+  const it=DATA.items.filter(r=>r.grade==="resale"||r.grade==="personal");
+  const nAlert=it.filter(r=>r.alert).length;
   $("#meta").innerHTML="Updated "+esc(DATA.generated_str)+" ("+
     (age<1?"just now":age<120?age+" min ago":Math.round(age/60)+" h ago")+")<br>"+
-    "£1 = ¥"+DATA.fx.JPY+" · $"+DATA.fx.USD+
-    " · alerts: UK/US ≥"+DATA.bars.uk+"%, JP ≥"+DATA.bars.jp+"%"+
-    " · "+nMe+" buyable · "+nFlip+" flippable";
+    "£1 = ¥"+DATA.fx.JPY+" · $"+DATA.fx.USD+" · €"+DATA.fx.EUR+
+    " · "+it.length+" near-new finds · "+nAlert+" alert-worthy";
 }
 
 /* ---- wiring ---- */
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
   tab=b.dataset.tab;location.hash=tab;sortKey=null;sortDir=-1;render();
 });
-["q","fmodel","fmarket","fjis","fauction","falert"].forEach(id=>
+["q","ffam","fmodel","fmarket","fjis","fauction","falert"].forEach(id=>
   $("#"+id).addEventListener("input",render));
 const models=[...new Set(DATA.items.map(r=>r.model))].sort();
 $("#fmodel").innerHTML+=models.map(m=>"<option>"+esc(m)+"</option>").join("");
@@ -504,50 +499,54 @@ if(location.protocol.indexOf("http")===0)
 def write_csv(listings: list[Listing], path: str) -> None:
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["grade", "savings_pct", "value_pct", "flip_profit_gbp",
-                    "model", "source", "ram_gb", "storage_gb", "keyboard",
-                    "price", "currency", "landed_gbp", "value_landed_gbp",
-                    "fair_gbp", "uk_avg_gbp", "condition", "cycles", "auction",
-                    "flags", "title", "links"])
+        w.writerow(["family", "grade", "savings_pct", "flip_profit_gbp",
+                    "flip_target_gbp", "model", "source", "ram_gb",
+                    "storage_gb", "keyboard", "price", "currency",
+                    "landed_gbp", "uk_avg_gbp", "condition", "cycles",
+                    "auction", "flags", "title", "links"])
         for l in listings:
-            w.writerow([l.grade, l.savings_pct, l.value_pct, l.flip_profit_gbp,
-                        l.model_label, l.source, l.ram_gb, l.storage_gb,
-                        l.keyboard, l.price, l.currency, l.landed_gbp,
-                        l.value_landed_gbp, l.fair_gbp, l.uk_avg_gbp,
-                        l.condition, l.cycles, l.is_auction,
-                        "; ".join(l.flags), l.title,
+            w.writerow([l.family, l.grade, l.savings_pct, l.flip_profit_gbp,
+                        l.flip_target_gbp, l.model_label, l.source, l.ram_gb,
+                        l.storage_gb, l.keyboard, l.price, l.currency,
+                        l.landed_gbp, l.uk_avg_gbp, l.condition, l.cycles,
+                        l.is_auction, "; ".join(l.flags), l.title,
                         " | ".join(url for _, url in l.market_links)])
 
 
 def whatsapp_message(l: Listing, cfg: dict) -> str:
     """Plain-text alert for WhatsApp (CallMeBot). *asterisks* render bold."""
-    t = pricing.alert_thresholds(cfg, l.source)
+    t = pricing.alert_thresholds(cfg, l.source, l.family)
     fire = ("🔥 INCREDIBLE DEAL" if l.savings_pct >= t["hot"] else "✅ Good deal")
-    tier = ("🏪 resale-grade" if l.grade == "resale"
-            else "🎯 practically new, buy-to-use")
+    tier = ("🏪 new/unused" if l.grade == "resale" else "🎯 like new")
     src = {"ebay_us": "eBay US 🇺🇸", "swappa": "Swappa 🇺🇸",
-           "mercari": "Mercari 🇯🇵", "yahoo": "Yahoo 🇯🇵",
-           "rakuma": "Rakuma 🇯🇵", "ebay_uk": "eBay UK 🇬🇧"}.get(l.source, l.source)
-    spec = " / ".join(x for x in [
-        f"{l.ram_gb}GB" if l.ram_gb else "RAM?",
+           "craigslist": "Craigslist 🇺🇸", "mercari": "Mercari 🇯🇵",
+           "yahoo": "Yahoo 🇯🇵", "rakuma": "Rakuma 🇯🇵",
+           "paypay": "PayPay 🇯🇵", "ebay_uk": "eBay UK 🇬🇧",
+           "gumtree": "Gumtree 🇬🇧", "ebay_de": "eBay DE 🇩🇪"}.get(l.source, l.source)
+    spec_bits = [
+        f"{l.ram_gb}GB" if l.ram_gb else None,
         (f"{l.storage_gb // 1024}TB" if l.storage_gb and l.storage_gb >= 1024
-         else (f"{l.storage_gb}GB" if l.storage_gb else "SSD?")),
-        f"kbd {l.keyboard}",
-    ])
-    cyc = (f"{l.cycles} battery cycles" if l.cycles is not None
-           else "battery cycles unknown - check listing")
+         else (f"{l.storage_gb}GB" if l.storage_gb else None)),
+    ]
+    if l.family in pricing.KEYBOARD_FAMILIES:
+        spec_bits.append(f"kbd {l.keyboard}")
+    spec = " / ".join(x for x in spec_bits if x) or "spec not stated"
     lines = [
         f"{fire} ({tier})",
-        f"*MacBook Pro {l.model_label}* — {src}",
+        f"*{l.model_label}* — {src}",
         f"Save ~*{l.savings_pct:.0f}%* — landed est. *£{l.landed_gbp:,.0f}* "
         f"vs UK avg £{l.uk_avg_gbp:,.0f}",
     ]
-    if l.grade == "resale" and l.flip_profit_gbp > 0:
-        lines.append(f"Est. flip profit ~£{l.flip_profit_gbp:,.0f} "
-                     f"if resold at UK avg")
+    if l.flip_profit_gbp > 0 and l.flip_target_gbp:
+        lines.append(f"Est. resale profit ~£{l.flip_profit_gbp:,.0f} "
+                     f"(sell at ~£{l.flip_target_gbp:,.0f})")
     lines.append(f"{l.price_str}{' (auction bid)' if l.is_auction else ''}"
                  f" · {spec}")
-    lines.append(f"{l.condition} · {cyc}")
+    cond = l.condition
+    if l.family == "macbook":
+        cond += " · " + (f"{l.cycles} battery cycles" if l.cycles is not None
+                         else "battery cycles unknown - check listing")
+    lines.append(cond)
     if l.flags:
         lines.append("⚠️ " + "; ".join(l.flags))
     lines.append(l.title[:120])

@@ -1,6 +1,16 @@
 """
-pricing.py - model detection from listing titles (Japanese and English),
-currency conversion, landed-cost maths and deal scoring.
+pricing.py - product-family + model detection from listing titles (Japanese
+and English), currency conversion, landed-cost maths and deal scoring.
+
+Families covered (all 2022-or-later Apple models):
+  macbook     MacBook Pro 14/16 (M2 Pro generation onwards)
+  mac_mini    Mac mini (M2 / M2 Pro / M4 / M4 Pro)
+  mac_studio  Mac Studio (M1 Max/Ultra, M2 Max/Ultra, M4 Max, M3 Ultra)
+  imac        iMac 24" (M3 / M4)
+  mac_pro     Mac Pro (M2 Ultra)
+  display     Apple Studio Display
+  ipad_pro    iPad Pro (M2 / M4 / M5)
+  ipad_air    iPad Air (M2 / M3 / M4 - only the models averaging over ~£500)
 """
 from __future__ import annotations
 
@@ -12,93 +22,129 @@ from typing import Optional
 import requests
 
 # ----------------------------------------------------------------------------
-# Listing dataclass shared across the project
+# Sources: currency, fee route and alert region
 # ----------------------------------------------------------------------------
 
-# which currency each source trades in, and which fee route applies
 SOURCE_CURRENCY = {"mercari": "JPY", "yahoo": "JPY", "rakuma": "JPY",
-                   "ebay_us": "USD", "swappa": "USD", "ebay_uk": "GBP"}
-JP_SOURCES = {"mercari", "yahoo", "rakuma"}
-US_SOURCES = {"ebay_us", "swappa"}
-UK_SOURCES = {"ebay_uk"}
+                   "paypay": "JPY", "ebay_us": "USD", "swappa": "USD",
+                   "craigslist": "USD", "ebay_uk": "GBP", "gumtree": "GBP",
+                   "ebay_de": "EUR"}
+JP_SOURCES = {"mercari", "yahoo", "rakuma", "paypay"}
+US_SOURCES = {"ebay_us", "swappa", "craigslist"}
+UK_SOURCES = {"ebay_uk", "gumtree"}
+EU_SOURCES = {"ebay_de"}
+
+CURRENCY_SYMBOL = {"JPY": "¥", "USD": "$", "GBP": "£", "EUR": "€"}
 
 # alert thresholds are per REGION (JP prices genuinely run lower, so its bar
-# is higher - see alerts.regions in config.yaml)
+# is higher) and split by whether the product carries a keyboard - a JIS
+# keyboard hurts UK resale on a MacBook/iMac, but a Mac mini or iPad from
+# Japan is the same product you'd buy here (see alerts.* in config.yaml)
 REGION_OF_SOURCE = {"mercari": "jp", "yahoo": "jp", "rakuma": "jp",
-                    "ebay_us": "us", "swappa": "us", "ebay_uk": "uk"}
+                    "paypay": "jp", "ebay_us": "us", "swappa": "us",
+                    "craigslist": "us", "ebay_uk": "uk", "gumtree": "uk",
+                    "ebay_de": "eu"}
 
-_THRESHOLD_DEFAULTS = {"uk": {"min": 35, "hot": 40, "too_good": 50},
-                       "us": {"min": 35, "hot": 40, "too_good": 50},
-                       "jp": {"min": 50, "hot": 55, "too_good": 65}}
+# families whose box includes a keyboard (iMac ships with a Magic Keyboard)
+KEYBOARD_FAMILIES = {"macbook", "imac"}
+
+FAMILY_NAME = {"macbook": "MacBook Pro", "mac_mini": "Mac mini",
+               "mac_studio": "Mac Studio", "imac": "iMac 24\"",
+               "mac_pro": "Mac Pro", "display": "Studio Display",
+               "ipad_pro": "iPad Pro", "ipad_air": "iPad Air"}
+
+_THRESHOLD_DEFAULTS = {
+    True:  {"uk": {"min": 35, "hot": 40, "too_good": 50},    # with keyboard
+            "us": {"min": 35, "hot": 40, "too_good": 50},
+            "eu": {"min": 38, "hot": 43, "too_good": 53},
+            "jp": {"min": 50, "hot": 55, "too_good": 65}},
+    False: {"uk": {"min": 35, "hot": 40, "too_good": 50},    # keyboardless
+            "us": {"min": 35, "hot": 40, "too_good": 50},
+            "eu": {"min": 35, "hot": 40, "too_good": 50},
+            "jp": {"min": 42, "hot": 47, "too_good": 57}},
+}
 
 
 def region_of(source: str) -> str:
     return REGION_OF_SOURCE.get(source, "uk")
 
 
-def alert_thresholds(cfg: dict, source: str) -> dict:
+def alert_thresholds(cfg: dict, source: str, family: str = "macbook") -> dict:
     """{'min', 'hot', 'too_good'} savings-% thresholds for this source's
-    region. Falls back to the old flat keys if alerts.regions is absent."""
+    region and this product family (keyboarded products carry a higher JP/EU
+    bar - a JIS/QWERTZ keyboard is a real resale handicap; keyboardless
+    products only pay a small forwarding-hassle premium)."""
     a = cfg.get("alerts", {})
     reg = region_of(source)
-    base = dict(_THRESHOLD_DEFAULTS[reg])
+    kb = family in KEYBOARD_FAMILIES
+    base = dict(_THRESHOLD_DEFAULTS[kb][reg])
     # legacy flat keys (pre-regional configs) apply to every region
     for old, new in (("min_savings_pct", "min"), ("hot_savings_pct", "hot"),
                      ("too_good_pct", "too_good")):
         if old in a:
             base[new] = float(a[old])
-    for k, v in (a.get("regions", {}).get(reg) or {}).items():
+    table = a.get("regions" if kb else "regions_no_keyboard") or {}
+    # keyboardless table falls back to the keyboarded one for regions it
+    # doesn't override (uk/us are usually identical)
+    if not kb and reg not in table:
+        table = a.get("regions") or {}
+    for k, v in (table.get(reg) or {}).items():
         if k in base:
             base[k] = float(v)
     return base
 
 
 def global_min_alert_pct(cfg: dict) -> float:
-    """The lowest alert bar across all regions - below it nothing alerts."""
-    return min(alert_thresholds(cfg, s)["min"] for s in REGION_OF_SOURCE)
+    """The lowest alert bar across all regions and both keyboard classes -
+    below it nothing alerts."""
+    mins = []
+    for src in REGION_OF_SOURCE:
+        for fam in ("macbook", "mac_mini"):
+            mins.append(alert_thresholds(cfg, src, fam)["min"])
+    return min(mins)
 
-CURRENCY_SYMBOL = {"JPY": "¥", "USD": "$", "GBP": "£"}
 
-# grade -> condition bucket used by the fair-value maths
-BUCKET_OF_GRADE = {"resale": "new", "personal": "like_new", "good": "good"}
-
+# ----------------------------------------------------------------------------
+# Listing dataclass shared across the project
+# ----------------------------------------------------------------------------
 
 @dataclass
 class Listing:
     item_id: str               # e.g. "m12345678901" or "x1234567890"
-    source: str                # "mercari" | "yahoo" | "rakuma" | "ebay_us"
+    source: str                # one of SOURCE_CURRENCY's keys
     title: str
     price: float               # in the source's native currency (see currency)
     is_auction: bool = False   # True = auction current bid (price may rise)
     condition: str = ""        # text such as "新品、未使用" or "Open box"
-    currency: str = "JPY"      # "JPY" | "USD"
+    currency: str = "JPY"      # "JPY" | "USD" | "GBP" | "EUR"
     best_offer: bool = False   # eBay "or Best Offer" - real price may be lower
     grade: str = "resale"      # "resale" (new/unused, arbitrage-safe) |
-                               # "personal" (practically new, buy-to-use) |
-                               # "good" (light visible wear - value tier only)
+                               # "personal" (like new, zero visible wear) |
+                               # "good" (light wear - only if value tier on)
     url: str = ""              # original marketplace URL
     buyee_path: str = ""       # exact Buyee item URL captured while scraping
-                               # (used for sources where the ID format varies)
     # filled in during analysis:
+    family: str = ""           # product family (see FAMILY_NAME)
     model_id: Optional[str] = None
     model_label: str = ""
     chip: str = ""
-    size: Optional[int] = None
+    size: Optional[float] = None
     size_guessed: bool = False
     ram_gb: Optional[int] = None
     storage_gb: Optional[int] = None
-    keyboard: str = "unknown"  # "US" | "JIS" | "unknown"
+    keyboard: str = "unknown"  # "US" | "UK" | "JIS" | "EU" | "unknown"
     cycles: Optional[int] = None
     landed_gbp: float = 0.0
     uk_avg_gbp: float = 0.0
     savings_pct: float = 0.0
-    # best-value analysis (section 3):
+    # condition-aware analysis:
     uk_used_gbp: float = 0.0        # eBay-UK sold median for USED units
     fair_gbp: float = 0.0           # fair UK value for THIS condition
     value_landed_gbp: float = 0.0   # landed + pro-rated battery wear cost
-    value_pct: float = 0.0          # % below fair value = the deal score
+    value_pct: float = 0.0          # % below fair value
     spec_adj_gbp: float = 0.0       # benchmark shift for above/below-base spec
-    flip_profit_gbp: float = 0.0    # est. profit reselling at UK avg (resale tier)
+    flip_profit_gbp: float = 0.0    # est. profit reselling (resale + personal)
+    flip_target_gbp: float = 0.0    # the price the flip assumes you sell at
     flags: list = field(default_factory=list)
 
     @property
@@ -109,17 +155,21 @@ class Listing:
     @property
     def market_links(self) -> list:
         """(label, url) purchase links appropriate to the source's market."""
-        if self.source in US_SOURCES or self.source in UK_SOURCES:
-            label = {"ebay_us": "eBay US", "swappa": "Swappa",
-                     "ebay_uk": "eBay UK"}.get(self.source, "Listing")
-            return [(label, self.original_url)]
-        return [("Buyee", self.buyee_url),
-                ("ZenMarket", self.zenmarket_url),
-                ("Original", self.original_url)]
+        if self.source in JP_SOURCES:
+            links = [("Buyee", self.buyee_url)]
+            if self.source != "paypay":       # ZenMarket doesn't proxy PayPay
+                links.append(("ZenMarket", self.zenmarket_url))
+            links.append(("Original", self.original_url))
+            return links
+        label = {"ebay_us": "eBay US", "swappa": "Swappa",
+                 "ebay_uk": "eBay UK", "ebay_de": "eBay DE",
+                 "craigslist": "Craigslist", "gumtree": "Gumtree",
+                 }.get(self.source, "Listing")
+        return [(label, self.original_url)]
 
     @property
     def buyee_url(self) -> str:
-        if self.source in US_SOURCES:
+        if self.source not in JP_SOURCES:
             return ""
         if self.buyee_path:
             if self.buyee_path.startswith("http"):
@@ -129,17 +179,17 @@ class Listing:
             return f"https://buyee.jp/mercari/item/{self.item_id}"
         if self.source == "rakuma":
             return f"https://buyee.jp/item/rakuma/{self.item_id}"
+        if self.source == "paypay":
+            return f"https://buyee.jp/paypayfleamarket/item/{self.item_id}"
         return f"https://buyee.jp/item/yahoo/auction/{self.item_id}"
 
     @property
     def zenmarket_url(self) -> str:
-        if self.source in US_SOURCES:
+        if self.source not in JP_SOURCES:
             return ""
         if self.source == "mercari":
             return f"https://zenmarket.jp/en/mercariproduct.aspx?itemCode={self.item_id}"
         if self.source == "rakuma":
-            # ZenMarket also proxies Rakuma; if the code shape ever drifts this
-            # still lands on a valid search for the item.
             return f"https://zenmarket.jp/en/rakuma.aspx?itemCode={self.item_id}"
         return f"https://zenmarket.jp/en/auction.aspx?itemCode={self.item_id}"
 
@@ -151,99 +201,198 @@ class Listing:
             return f"https://www.ebay.com/itm/{self.item_id}"
         if self.source == "ebay_uk":
             return f"https://www.ebay.co.uk/itm/{self.item_id}"
+        if self.source == "ebay_de":
+            return f"https://www.ebay.de/itm/{self.item_id}"
         if self.source == "swappa":
             return f"https://swappa.com/listing/view/{self.item_id}"
         if self.source == "mercari":
             return f"https://jp.mercari.com/item/{self.item_id}"
         if self.source == "rakuma":
             return f"https://item.fril.jp/{self.item_id}"
+        if self.source == "paypay":
+            return f"https://paypayfleamarket.yahoo.co.jp/item/{self.item_id}"
         return f"https://page.auctions.yahoo.co.jp/jp/auction/{self.item_id}"
 
 
 # ----------------------------------------------------------------------------
-# Title normalisation + model detection
+# Title normalisation + family / model detection
 # ----------------------------------------------------------------------------
 
-RAM_SIZES = {8, 16, 18, 24, 32, 36, 48, 64, 96, 128}
-STORAGE_GB_SIZES = {256, 512}
+# 256/512 are deliberately NOT here even though huge Mac Studio/Pro RAM
+# configs exist - a bare "512GB" in a title is storage 99% of the time
+RAM_SIZES = {8, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192}
+MAC_STORAGE_SIZES = {256, 512}
+IPAD_STORAGE_SIZES = {128, 256, 512}
 
 def normalise(text: str) -> str:
-    """Full-width -> half-width, uppercase, katakana chip words -> latin."""
+    """Full-width -> half-width, uppercase, katakana product words -> latin."""
     t = unicodedata.normalize("NFKC", text or "")
     t = t.upper()
-    t = t.replace("プロ", " PRO ").replace("マックス", " MAX ")
+    t = (t.replace("プロ", " PRO ").replace("マックス", " MAX ")
+          .replace("ウルトラ", " ULTRA ").replace("スタジオ", " STUDIO ")
+          .replace("ミニ", " MINI ").replace("アイパッド", " IPAD ")
+          .replace("エアー", " AIR ").replace("エア", " AIR ")
+          .replace("ディスプレイ", " DISPLAY "))
     t = t.replace("インチ", "INCH").replace("型", "INCH")
-    return t
+    return re.sub(r"\s+", " ", t)
+
+
+# chips valid per family (2022-or-later models only)
+FAMILY_CHIPS = {
+    "macbook":    {"M2 PRO", "M2 MAX", "M3", "M3 PRO", "M3 MAX",
+                   "M4", "M4 PRO", "M4 MAX", "M5", "M5 PRO", "M5 MAX"},
+    "mac_mini":   {"M2", "M2 PRO", "M4", "M4 PRO"},
+    "mac_studio": {"M1 MAX", "M1 ULTRA", "M2 MAX", "M2 ULTRA",
+                   "M4 MAX", "M3 ULTRA"},
+    "imac":       {"M3", "M4"},
+    "mac_pro":    {"M2 ULTRA"},
+    "display":    set(),           # Studio Display has no M chip
+    "ipad_pro":   {"M2", "M4", "M5"},
+    "ipad_air":   {"M2", "M3", "M4"},
+}
+
+CHIP_RE = re.compile(r"\bM([1-5])\s*[-/]?\s*(PRO|MAX|ULTRA)?\b")
+
+
+# a title that STARTS with an accessory name is selling the accessory, not
+# the device ("Apple Magic Keyboard 13 Zoll iPad Air (M2)...", "Hülle für
+# iPad Pro", "Smart Folio..."). Titles that merely mention one ("iPad Pro M4
+# + Magic Keyboard") are bundles and stay in.
+_ACCESSORY_LEAD_RE = re.compile(
+    r"^\W*(?:APPLE\s+)?(?:MAGIC\s+)?(?:KEYBOARD|TASTATUR|CLAVIER|PENCIL|"
+    r"SMART\s+FOLIO|FOLIO|CASE|COVER|HÜLLE|SLEEVE|SKIN|STAND|DOCK|MOUSE|"
+    r"TRACKPAD|CHARGER|NETZTEIL|LADEGERÄT)\b")
+
+
+def _detect_family(t: str) -> str:
+    """Product family from a normalised title; '' = not a product we track."""
+    if _ACCESSORY_LEAD_RE.search(t):
+        return ""
+    if "MACBOOK" in t:
+        # MacBook Air is out of scope (and 13/15-inch sizes are Airs)
+        return "" if "AIR" in t else "macbook"
+    if "STUDIO DISPLAY" in t:
+        return "display"
+    if "MAC STUDIO" in t:
+        return "mac_studio"
+    if "MAC MINI" in t or "MACMINI" in t:
+        return "mac_mini"
+    if "IMAC" in t:
+        return "imac"
+    if re.search(r"\bMAC\s*PRO\b", t):
+        return "mac_pro"
+    if "IPAD PRO" in t:
+        return "ipad_pro"
+    if "IPAD AIR" in t:
+        return "ipad_air"
+    return ""
+
+
+# JP sellers state iPad generations instead of chips: map the 2022 M2 gens
+_IPAD_GEN_M2 = re.compile(r"第\s*([46])\s*世代")
+
 
 def parse_listing_specs(listing: Listing) -> None:
-    """Fill chip / size / ram / storage / keyboard on the listing in place."""
+    """Fill family / chip / size / ram / storage / keyboard in place.
+    A listing that doesn't parse to a tracked family keeps family='' and is
+    dropped by the caller."""
     t = normalise(listing.title)
 
-    # Must look like a MacBook Pro, not an Air / Neo / accessory
-    if "MACBOOK" not in t:
-        return
-    if "AIR" in t or "NEO" in t:
+    fam = _detect_family(t)
+    if not fam:
         return
 
-    # --- chip ---------------------------------------------------------------
-    m = re.search(r"\bM([2-5])\s*[-/]?\s*(PRO|MAX)?\b", t)
-    if not m:
-        return
-    gen = int(m.group(1))
-    variant = m.group(2) or ""
-    # A plain "M2" MacBook Pro (13-inch) is OUT of scope; M2 PRO/MAX are in.
-    if gen == 2 and not variant:
-        return
-    listing.chip = f"M{gen} {variant}".strip()
+    # --- chip --------------------------------------------------------------
+    chip = ""
+    m = CHIP_RE.search(t)
+    if m:
+        chip = f"M{m.group(1)} {m.group(2) or ''}".strip()
+    if fam == "ipad_pro" and not m:
+        g = _IPAD_GEN_M2.search(listing.title)
+        if g:                       # 11" 第4世代 / 12.9" 第6世代 = M2 (2022)
+            chip = "M2"
+    if fam == "display":
+        chip = ""                   # no chip - and none required
+    elif chip not in FAMILY_CHIPS[fam]:
+        return                      # pre-2022, MacBook Air-class, or unknown
+    listing.family = fam
+    listing.chip = chip
 
-    # --- RAM / storage (strip them out before looking for screen size) -------
+    # --- RAM / storage (strip them out before looking for sizes) ------------
     storage_gb = None
     tb = re.search(r"\b([1248])\s*TB\b", t)
     if tb:
         storage_gb = int(tb.group(1)) * 1024
     gb_values = [int(x) for x in re.findall(r"\b(\d{2,4})\s*GB\b", t)]
     ram = None
+    stor_set = IPAD_STORAGE_SIZES if fam.startswith("ipad") else MAC_STORAGE_SIZES
     for v in gb_values:
-        if v in RAM_SIZES and ram is None:
+        if fam.startswith("ipad") or fam == "display":
+            # iPad titles never state RAM - every GB figure is storage
+            if v in IPAD_STORAGE_SIZES and storage_gb is None:
+                storage_gb = v
+        elif v in RAM_SIZES and ram is None:
             ram = v
-        elif v in STORAGE_GB_SIZES and storage_gb is None:
+        elif v in stor_set and storage_gb is None:
             storage_gb = v
-    # lone "512GB" with no RAM figure: don't mistake storage for RAM
     listing.ram_gb = ram
     listing.storage_gb = storage_gb
 
-    # --- screen size ----------------------------------------------------------
+    # --- size / variant ------------------------------------------------------
     t_nosizes = re.sub(r"\b\d{1,4}\s*(?:GB|TB)\b", " ", t)
-    # core counts ("12C CPU", "16-core GPU", "16‑coreGPU", "16コア") are not
-    # screen sizes; sellers use assorted unicode hyphens and skip spaces
+    # core counts ("12C CPU", "16-core GPU", "24コア") are not sizes
     t_nosizes = re.sub(r"\b\d{1,2}\s*[-‐–—]?\s*(?:C\b|CORES?|コア)", " ", t_nosizes)
-    s = re.search(r"(?<!\d)(14|16)(?:[.]2)?(?!\d)", t_nosizes)
-    if s:
-        listing.size = int(s.group(1))
+
+    if fam == "macbook":
+        s = re.search(r"(?<!\d)(14|16)(?:[.]2)?(?!\d)", t_nosizes)
+        if s:
+            listing.size = int(s.group(1))
+        else:
+            # an explicit 13"/15" with no 14/16 anywhere is a MacBook Air (or
+            # an old 13" Pro) whose title just skips the word "Air"
+            if re.search(r"(?<!\d)(13|15)(?:[.]\d)?\s*(?:INCH|[\"”])", t_nosizes):
+                listing.family = listing.chip = ""
+                return
+            listing.size = 14      # conservative default: the cheaper size
+            listing.size_guessed = True
+    elif fam == "imac":
+        listing.size = 24          # every Apple-silicon iMac is 24"
+    elif fam in ("ipad_pro", "ipad_air"):
+        if re.search(r"(?<!\d)12[.,]9(?!\d)", t_nosizes):
+            listing.size = 12.9
+        else:
+            s = re.search(r"(?<!\d)(11|13)(?!\d)", t_nosizes)
+            if s:
+                listing.size = float(s.group(1))
+            else:
+                listing.size = 11.0    # conservative default: the smaller iPad
+                listing.size_guessed = True
+        # generation naming: the M2 big iPad Pro is "12.9", the M4/M5 one "13"
+        if fam == "ipad_pro":
+            if listing.chip == "M2" and listing.size == 13:
+                listing.size = 12.9
+            elif listing.chip in ("M4", "M5") and listing.size == 12.9:
+                listing.size = 13.0
+    # mac_mini / mac_studio / mac_pro / display have no size dimension
+
+    # --- keyboard layout (only meaningful when a keyboard is in the box) -----
+    if fam in KEYBOARD_FAMILIES:
+        if re.search(r"US\s*配列|US\s*キー|英語\s*配列|英字\s*配列|US\s*KEYBOARD", t):
+            listing.keyboard = "US"
+        elif re.search(r"\bJIS\b|日本語\s*配列|JAPANESE\s*KEY", t):
+            listing.keyboard = "JIS"
+        elif re.search(r"\b(?:SWEDISH|GERMAN|FRENCH|ITALIAN|SPANISH|DANISH|"
+                       r"NORWEGIAN|NORDIC|BELGIAN|PORTUGUESE|QWERTZ|AZERTY)\b", t):
+            listing.keyboard = "EU"    # non-UK ISO layout sold cross-border
     else:
-        # an explicit 13"/15" with no 14/16 anywhere is a MacBook Air (or an
-        # old 13" Pro) whose title just skips the word "Air" - out of scope
-        if re.search(r"(?<!\d)(13|15)(?:[.]\d)?\s*(?:INCH|[\"”])", t_nosizes):
-            listing.chip = ""
-            return
-        listing.size = 14          # conservative default: compare vs the cheaper size
-        listing.size_guessed = True
+        listing.keyboard = "n/a"       # no keyboard in the box
 
-    # --- keyboard layout -------------------------------------------------------
-    # Only overwrite when the title actually states a layout: US-market
-    # listings arrive with keyboard="US" already set (ANSI is the default
-    # there) and that must survive a title that doesn't mention the keyboard.
-    if re.search(r"US\s*配列|US\s*キー|英語\s*配列|英字\s*配列|US\s*KEYBOARD", t):
-        listing.keyboard = "US"
-    elif re.search(r"\bJIS\b|日本語\s*配列|JAPANESE\s*KEY", t):
-        listing.keyboard = "JIS"
-    elif re.search(r"\b(?:SWEDISH|GERMAN|FRENCH|ITALIAN|SPANISH|DANISH|"
-                   r"NORWEGIAN|NORDIC|BELGIAN|PORTUGUESE|QWERTZ|AZERTY)\b", t):
-        # in a Mac listing a bare nationality adjective means the keyboard
-        listing.keyboard = "EU"    # non-UK ISO layout sold cross-border
+    # cellular iPads are worth a little more - surface it
+    if fam.startswith("ipad") and re.search(r"CELLULAR|セルラー|WI-?FI\s*\+", t):
+        listing.flags.append("cellular model (worth a little more)")
 
-    # sellers often put the cycle count right in the title - grab it for free
-    if listing.cycles is None:
+    # sellers often put the battery cycle count right in the title
+    if listing.cycles is None and fam == "macbook":
         listing.cycles = find_cycle_count(listing.title)
 
 
@@ -279,21 +428,32 @@ def _spec_adjust_gbp(listing: Listing, mdl: dict, cfg: Optional[dict]) -> float:
 
 def match_model(listing: Listing, models: list[dict],
                 cfg: Optional[dict] = None) -> None:
-    """Attach the matching config model (chip + size) to the listing, with
-    the benchmark adjusted for the listing's RAM/SSD spec when cfg given."""
+    """Attach the matching config model (family + chip + size) to the listing,
+    with the benchmark adjusted for the listing's RAM/SSD spec when cfg given."""
     for mdl in models:
-        if mdl["chip"].upper() == listing.chip and int(mdl["size"]) == listing.size:
-            listing.model_id = mdl["id"]
-            listing.model_label = f'{mdl["chip"]} {mdl["size"]}"'
-            adj = _spec_adjust_gbp(listing, mdl, cfg)
-            listing.spec_adj_gbp = adj
-            new = float(mdl["uk_avg_gbp"])
-            used = float(mdl.get("uk_used_gbp", 0) or 0)
-            listing.uk_avg_gbp = round(new + adj, 2)
-            # scale the used benchmark proportionally with the spec shift
-            listing.uk_used_gbp = (round(used * listing.uk_avg_gbp / new, 2)
-                                   if used and new else used)
-            return
+        if mdl.get("family", "macbook") != (listing.family or "macbook"):
+            continue
+        if str(mdl.get("chip", "")).upper() != listing.chip:
+            continue
+        if "size" in mdl and (listing.size is None
+                              or float(mdl["size"]) != float(listing.size)):
+            continue
+        listing.model_id = mdl["id"]
+        fam_name = FAMILY_NAME.get(listing.family, "")
+        size_str = ""
+        if "size" in mdl and listing.family in ("macbook", "ipad_pro", "ipad_air"):
+            size_str = f' {mdl["size"]}"'
+        listing.model_label = (mdl.get("label")
+                               or f"{fam_name} {listing.chip}{size_str}".strip())
+        adj = _spec_adjust_gbp(listing, mdl, cfg)
+        listing.spec_adj_gbp = adj
+        new = float(mdl["uk_avg_gbp"])
+        used = float(mdl.get("uk_used_gbp", 0) or 0)
+        listing.uk_avg_gbp = round(new + adj, 2)
+        # scale the used benchmark proportionally with the spec shift
+        listing.uk_used_gbp = (round(used * listing.uk_avg_gbp / new, 2)
+                               if used and new else used)
+        return
 
 
 # ----------------------------------------------------------------------------
@@ -308,26 +468,37 @@ def is_excluded(title: str, exclude_keywords: list[str]) -> Optional[str]:
     return None
 
 
+# classifieds sites (gumtree/craigslist) are full of "wanted"/"we buy" ads -
+# they look like listings but there's nothing to buy
+CLASSIFIED_AD_RE = re.compile(
+    r"\bwanted\b|\bwtb\b|we\s*buy|i\s*buy|buying\b|sell\s*your|cash\s*for|"
+    r"\blooking\s*for\b|trade\s*in|recycl", re.I)
+
+
+def is_wanted_ad(title: str) -> bool:
+    return bool(CLASSIFIED_AD_RE.search(title))
+
+
 # ----------------------------------------------------------------------------
 # FX
 # ----------------------------------------------------------------------------
 
 def get_fx(fx_cfg: dict) -> tuple[dict, str]:
-    """Live JPY-per-GBP and USD-per-GBP in one request (frankfurter, ECB data).
-    Returns ({"JPY": x, "USD": y, "GBP": 1.0}, note)."""
+    """Live JPY/USD/EUR per GBP in one request (frankfurter, ECB data)."""
     fallback = {"JPY": float(fx_cfg.get("fallback_jpy_per_gbp", 216)),
                 "USD": float(fx_cfg.get("fallback_usd_per_gbp", 1.33)),
+                "EUR": float(fx_cfg.get("fallback_eur_per_gbp", 1.17)),
                 "GBP": 1.0}
     try:
         r = requests.get(
             "https://api.frankfurter.dev/v1/latest",
-            params={"base": "GBP", "symbols": "JPY,USD"},
+            params={"base": "GBP", "symbols": "JPY,USD,EUR"},
             timeout=10,
         )
         r.raise_for_status()
         rates = r.json()["rates"]
         return {"JPY": float(rates["JPY"]), "USD": float(rates["USD"]),
-                "GBP": 1.0}, "live"
+                "EUR": float(rates["EUR"]), "GBP": 1.0}, "live"
     except Exception:
         return fallback, "fallback (edit fx.fallback_* in config.yaml)"
 
@@ -336,29 +507,64 @@ def get_fx(fx_cfg: dict) -> tuple[dict, str]:
 # Landed cost + scoring
 # ----------------------------------------------------------------------------
 
-def landed_cost_gbp(price: float, source: str, cfg: dict, rates: dict) -> float:
+# default international shipping by family - a boxed iPad posts for a
+# fraction of what a 27" glass display costs to courier safely
+_INTL_JPY_DEFAULT = {"macbook": 8000, "mac_mini": 6000, "mac_studio": 12000,
+                     "imac": 20000, "mac_pro": 30000, "display": 25000,
+                     "ipad_pro": 4500, "ipad_air": 4500}
+_INTL_USD_DEFAULT = {"macbook": 85, "mac_mini": 60, "mac_studio": 110,
+                     "imac": 180, "mac_pro": 250, "display": 200,
+                     "ipad_pro": 45, "ipad_air": 45}
+_EU_EUR_DEFAULT = {"macbook": 30, "mac_mini": 25, "mac_studio": 45,
+                   "imac": 70, "mac_pro": 90, "display": 80,
+                   "ipad_pro": 20, "ipad_air": 20}
+
+
+def _family_cost(cfg_map: Optional[dict], defaults: dict, family: str,
+                 fallback: float) -> float:
+    if cfg_map and family in cfg_map:
+        return float(cfg_map[family])
+    return float(defaults.get(family, fallback))
+
+
+def landed_cost_gbp(price: float, source: str, cfg: dict, rates: dict,
+                    family: str = "macbook") -> float:
     """Full estimated cost delivered to a UK doorstep, in GBP.
 
     Japan route:  item + proxy fee + JP domestic + international shipping (JPY)
     US route:     item (+ sales tax) + forwarder fee + US domestic
                   + international shipping (USD)
-    Both then:    x 1.20 UK import VAT (laptops carry 0% duty) + courier handling.
+    EU route:     item + shipping to the UK (EUR)
+    All three:    x 1.20 UK import VAT (0% duty on computers/tablets)
+                  + courier handling.  UK listings just add postage.
+    Shipping scales with the product: an iPad posts cheap, a 27" display
+    doesn't (override per family under costs: in config.yaml).
     """
     c = cfg["costs"]
+    fam = family or "macbook"
     if source in UK_SOURCES:
-        # domestic purchase: no import VAT, no courier clearance - just a
-        # small postage buffer (many UK listings ship free)
         return round(price + float(c.get("uk_domestic_shipping_gbp", 8)), 2)
     if source in US_SOURCES:
         tax = 1 + float(c.get("us_sales_tax_pct", 0)) / 100.0
+        intl = _family_cost(c.get("us_intl_shipping_usd_family"),
+                            _INTL_USD_DEFAULT, fam,
+                            c.get("us_intl_shipping_usd", 85))
         total_usd = (price * tax
                      + c.get("us_forwarder_fee_usd", 12)
                      + c.get("us_domestic_shipping_usd", 10)
-                     + c.get("us_intl_shipping_usd", 85))
+                     + intl)
         gbp = total_usd / rates["USD"]
+    elif source in EU_SOURCES:
+        ship = _family_cost(c.get("eu_shipping_eur_family"),
+                            _EU_EUR_DEFAULT, fam,
+                            c.get("eu_shipping_eur", 30))
+        gbp = (price + ship) / rates["EUR"]
     else:
         dom = c["domestic_shipping_jpy"].get(source, 0)
-        total_jpy = price + c["proxy_fee_jpy"] + dom + c["intl_shipping_jpy"]
+        intl = _family_cost(c.get("intl_shipping_jpy_family"),
+                            _INTL_JPY_DEFAULT, fam,
+                            c.get("intl_shipping_jpy", 8000))
+        total_jpy = price + c["proxy_fee_jpy"] + dom + intl
         gbp = total_jpy / rates["JPY"]
     if c.get("apply_uk_import", True):
         gbp = gbp * (1 + c["uk_vat_pct"] / 100.0) + c["courier_handling_gbp"]
@@ -369,20 +575,15 @@ def fair_value_gbp(listing: Listing, cfg: dict) -> float:
     """What a UK buyer typically pays for THIS model in THIS condition.
 
     new       -> the model's UK average for new/unused (uk_avg_gbp)
-    good      -> the eBay-UK SOLD median for used units (uk_used_gbp),
-                 refreshed by `ukprices`; falls back to a researched factor
-    like_new  -> midpoint of the two (zero-wear units trade between the
-                 used median and the new price)
+    like_new  -> midpoint of new and the used median (or x0.88 fallback)
+    good      -> the eBay-UK SOLD median for used units (or x0.78 fallback)
     """
     v = cfg.get("value", {})
     new = float(listing.uk_avg_gbp)
     used = float(listing.uk_used_gbp or 0)
     if used and new:
-        # eBay sold medians mix specs (a used median can even exceed the new
-        # benchmark when high-RAM configs dominate) - keep the used figure
-        # inside a sane band relative to new
         used = min(max(used, new * 0.55), new * 0.92)
-    bucket = BUCKET_OF_GRADE.get(listing.grade, "good")
+    bucket = {"resale": "new", "personal": "like_new"}.get(listing.grade, "good")
     if bucket == "new":
         return new
     if bucket == "like_new":
@@ -396,9 +597,8 @@ def fair_value_gbp(listing: Listing, cfg: dict) -> float:
 
 def battery_wear_gbp(cycles: Optional[int], cfg: dict) -> float:
     """Battery life already consumed, priced pro-rata: each cycle uses
-    1/1000th of the battery's rated life, and a replacement costs a known
-    amount - so 600 cycles on a £249 battery = £149 of value gone. Smooth,
-    no cliffs; negligible (<£15) below 60 cycles."""
+    1/1000th of the battery's rated life; 600 cycles on a £249 battery =
+    £149 of value gone. Negligible (<£15) below 60 cycles."""
     if not cycles:
         return 0.0
     v = cfg.get("value", {})
@@ -425,11 +625,8 @@ def value_score(listing: Listing, cfg: dict) -> None:
 
 
 def max_cycles_for(grade: str, cfg: dict) -> int:
-    """Battery-cycle ceiling per tier: strict for resale-grade "unused"
-    machines, 60 for practically-new personal buys (~6% of Apple's
-    1000-cycle rating - battery health still within new-unit variance),
-    and the value tier's hard floor for "good" listings (beyond it the
-    machine counts as heavily used and is dropped anyway)."""
+    """Battery-cycle ceiling per tier (MacBooks only - desktops have no
+    battery and iPad sellers essentially never state a count)."""
     if grade == "personal":
         return int(cfg.get("personal", {}).get("max_battery_cycles", 60))
     if grade == "good":
@@ -437,58 +634,73 @@ def max_cycles_for(grade: str, cfg: dict) -> int:
     return int(cfg["alerts"]["max_battery_cycles"])
 
 
-def flip_profit_gbp(listing: Listing, cfg: dict) -> float:
-    """Estimated profit reselling a resale-grade unit at the UK average:
-    sale proceeds after friction (postage/packaging/pricing-to-sell) minus
-    the landed cost. Only meaningful for new/unused stock."""
+def flip_profit_gbp(listing: Listing, cfg: dict) -> tuple[float, float]:
+    """(profit, sell-at price) reselling this unit on the UK market:
+    new/unused stock sells at the UK average for new; like-new stock at the
+    like-new fair value. Friction covers postage/packaging/pricing-to-sell."""
     friction = float(cfg.get("resale", {}).get("sell_friction_pct", 5))
     if not listing.uk_avg_gbp or not listing.landed_gbp:
-        return 0.0
-    return round(listing.uk_avg_gbp * (1 - friction / 100.0)
-                 - listing.landed_gbp, 2)
+        return 0.0, 0.0
+    target = (listing.uk_avg_gbp if listing.grade == "resale"
+              else fair_value_gbp(listing, cfg))
+    return (round(target * (1 - friction / 100.0) - listing.landed_gbp, 2),
+            round(target, 2))
 
 
 def score(listing: Listing, cfg: dict, rates: dict) -> None:
-    listing.landed_gbp = landed_cost_gbp(listing.price, listing.source, cfg, rates)
+    listing.landed_gbp = landed_cost_gbp(listing.price, listing.source, cfg,
+                                         rates, listing.family)
     if listing.uk_avg_gbp:
         listing.savings_pct = round(
             (listing.uk_avg_gbp - listing.landed_gbp) / listing.uk_avg_gbp * 100, 1
         )
-    if listing.grade == "resale":
-        listing.flip_profit_gbp = flip_profit_gbp(listing, cfg)
+    if listing.grade in ("resale", "personal"):
+        listing.flip_profit_gbp, listing.flip_target_gbp = \
+            flip_profit_gbp(listing, cfg)
     a = cfg["alerts"]
-    # Price-sanity backstop: a whole MacBook never sells for a small fraction
-    # of its UK value - that's a part (screen/board/etc.) or an accessory the
-    # keyword list didn't catch. Flag (and below, suppress alerts) when the
-    # asking price is implausibly low for the model. Default 0.30 = 30% of UK
-    # avg; genuine bargains (even -50% landed) sit far above this floor.
+    # Price-sanity backstop: a whole unit never sells for a small fraction
+    # of its UK value - that's a part or an accessory (iPad keyboard, display
+    # stand, ...) the keyword list didn't catch.
     floor_ratio = a.get("implausible_price_ratio", 0.30)
     rate = rates.get(listing.currency)
     if listing.uk_avg_gbp and rate:
         bare_gbp = listing.price / rate   # bare item price, no fees
         if bare_gbp < listing.uk_avg_gbp * floor_ratio:
             listing.flags.append(
-                "PRICE TOO LOW for a whole unit - likely a part/accessory, not the Mac")
+                "PRICE TOO LOW for a whole unit - likely a part/accessory, not the device")
     if listing.spec_adj_gbp:
         listing.flags.append(
             f"benchmark spec-adjusted {listing.spec_adj_gbp:+,.0f} GBP")
-    if listing.savings_pct >= alert_thresholds(cfg, listing.source)["too_good"]:
+    t = alert_thresholds(cfg, listing.source, listing.family)
+    if listing.savings_pct >= t["too_good"]:
         listing.flags.append("TOO-GOOD? verify carefully (box-only/scam/mislabel risk)")
     if listing.is_auction:
         listing.flags.append("auction - current bid, price can rise")
     if listing.best_offer:
         listing.flags.append("accepts Best Offer - real price may be lower")
     if listing.size_guessed:
-        listing.flags.append('size not stated - assumed 14"')
-    if listing.keyboard == "JIS":
-        listing.flags.append("JIS (Japanese) keyboard")
-    elif listing.keyboard == "EU":
-        listing.flags.append("non-UK European keyboard layout")
-    elif listing.keyboard == "unknown" and listing.source in JP_SOURCES:
-        listing.flags.append("keyboard layout unknown (likely JIS)")
-    max_cyc = max_cycles_for(listing.grade, cfg)
-    if listing.cycles is not None and listing.cycles > max_cyc:
-        listing.flags.append(f"battery cycles {listing.cycles} > your max {max_cyc}")
+        base = '14"' if listing.family == "macbook" else '11"'
+        listing.flags.append(f"size not stated - assumed {base}")
+    # keyboard flags only where a keyboard is actually in the box
+    if listing.family == "macbook":
+        if listing.keyboard == "JIS":
+            listing.flags.append("JIS (Japanese) keyboard")
+        elif listing.keyboard == "EU":
+            listing.flags.append("non-UK European keyboard layout")
+        elif listing.keyboard == "unknown" and listing.source in JP_SOURCES:
+            listing.flags.append("keyboard layout unknown (likely JIS)")
+        max_cyc = max_cycles_for(listing.grade, cfg)
+        if listing.cycles is not None and listing.cycles > max_cyc:
+            listing.flags.append(f"battery cycles {listing.cycles} > your max {max_cyc}")
+    elif listing.family == "imac":
+        if listing.source in JP_SOURCES:
+            listing.flags.append("bundled JIS keyboard/mouse (UK swap ~£80)")
+        elif listing.source in EU_SOURCES:
+            listing.flags.append("bundled EU-layout keyboard (UK swap ~£80)")
+    if listing.source == "craigslist":
+        listing.flags.append("local pickup/cash - needs a US contact, no buyer protection")
+    elif listing.source == "gumtree":
+        listing.flags.append("classifieds - often collection-only, no buyer protection")
 
 
 CYCLE_RE = re.compile(

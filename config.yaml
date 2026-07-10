@@ -1,5 +1,5 @@
 # ============================================================
-#  MacBook Deal Bot - configuration
+#  Apple Deal Bot - configuration
 #  This is the ONLY file you should need to edit.
 #  Lines starting with # are comments and are ignored.
 # ============================================================
@@ -10,8 +10,8 @@
 # with below. `phone` is YOUR WhatsApp number with country code.
 whatsapp:
   enabled: false          # set to true once you've added your phone + apikey below
-  phone: "WHATSAPP_PHONE"      # e.g. "+447712345678"
-  apikey: "WHATSAPP_APIKEY"    # e.g. "123456"
+  phone: "+447757687048"      # e.g. "+447712345678"
+  apikey: "8378881"    # e.g. "123456"
 
 # ------------------------------------------------------------------
 # The bot outputs TWO tiers:
@@ -40,7 +40,10 @@ personal:
 # not against the price of a new one. Top `top_n` shown; no WhatsApp alerts.
 # ------------------------------------------------------------------
 value:
-  enabled: true
+  # OFF since the resale refocus (July 2026): the bot hunts near-new stock
+  # to flip, not worn machines to use. Turning this back on re-admits
+  # "good"-condition listings and the condition-aware value ranking.
+  enabled: false
   top_n: 100
   # Fair-value fallbacks when a model has no eBay-UK USED sold median yet
   # (run `python macdeals.py ukprices --write` to fill those in with real
@@ -65,21 +68,34 @@ value:
   # base-model money (and vice versa). GBP per step, tune freely.
   spec_adjustments:
     ram_per_8gb_gbp: 60        # each 8GB of RAM above the base spec
-    ssd_gbp: {256: -80, 512: 0, 1024: 130, 2048: 350, 4096: 700}
+    ssd_gbp: {128: -150, 256: -80, 512: 0, 1024: 130, 2048: 350, 4096: 700}
 
 alerts:
   # A WhatsApp alert fires when the ESTIMATED LANDED COST (item + fees +
   # shipping + UK VAT + courier fee, converted to GBP) is at least `min` %
-  # below the UK average for that model. Thresholds are PER REGION because
-  # JP prices genuinely run lower - a higher bar there keeps alerts special:
+  # below the UK average for that model.
   #   min      - alert fires at this saving
   #   hot      - extra "INCREDIBLE DEAL" flag at this level
   #   too_good - beyond this the listing is suspicious (scam / box-only /
   #              mislabelled). Still shown + alerted, but with a big warning.
+  # Thresholds are PER REGION and split by whether the product has a
+  # keyboard in the box:
+  #  - `regions` applies to MacBooks and iMacs (bundled keyboard): a JIS or
+  #    QWERTZ keyboard is a real UK-resale handicap, so JP/EU bars are higher.
+  #  - `regions_no_keyboard` applies to Mac mini / Mac Studio / Mac Pro /
+  #    Studio Display / iPads: the product is identical wherever it's from,
+  #    so a foreign deal only carries a small forwarding-hassle premium
+  #    (JP sits 7 points above the UK bar instead of 15).
   regions:
     uk: {min: 35, hot: 40, too_good: 50}
     us: {min: 35, hot: 40, too_good: 50}
+    eu: {min: 38, hot: 43, too_good: 53}
     jp: {min: 50, hot: 55, too_good: 65}
+  regions_no_keyboard:
+    uk: {min: 35, hot: 40, too_good: 50}
+    us: {min: 35, hot: 40, too_good: 50}
+    eu: {min: 35, hot: 40, too_good: 50}
+    jp: {min: 42, hot: 47, too_good: 57}
   # A whole MacBook never costs less than this fraction of its UK average -
   # below it the listing is almost certainly a part (screen/board) or
   # accessory, so it is DROPPED entirely. 0.35 = 35%. Lower this only if
@@ -114,6 +130,16 @@ costs:
     rakuma: 0
   # International courier (DHL/FedEx/UPS) for a boxed 14"/16" laptop, ~2-4 kg.
   intl_shipping_jpy: 8000
+  # ...and per product family (an iPad posts cheap; a 27" glass display or an
+  # iMac needs serious packing). Families not listed use intl_shipping_jpy.
+  intl_shipping_jpy_family:
+    ipad_pro: 4500
+    ipad_air: 4500
+    mac_mini: 6000
+    mac_studio: 12000
+    imac: 20000
+    mac_pro: 30000
+    display: 25000
 
   # ---- US route (eBay US) ------------------------------------------------
   # US sales tax on the purchase. 0 is right when the seller ships
@@ -131,6 +157,29 @@ costs:
   us_domestic_shipping_usd: 10
   # Forwarder -> UK express courier for a boxed 14"/16" laptop, ~2-4 kg.
   us_intl_shipping_usd: 85
+  # ...and per product family (same idea as the JP table above).
+  us_intl_shipping_usd_family:
+    ipad_pro: 45
+    ipad_air: 45
+    mac_mini: 60
+    mac_studio: 110
+    imac: 180
+    mac_pro: 250
+    display: 200
+
+  # ---- EU route (eBay Germany) --------------------------------------------
+  # Most DE sellers ship EU-wide and many post to the UK; where they don't,
+  # an EU parcel forwarder adds ~€10 (folded into these estimates). UK import
+  # VAT applies just like the JP/US routes (0% duty on computers/tablets).
+  eu_shipping_eur: 30
+  eu_shipping_eur_family:
+    ipad_pro: 20
+    ipad_air: 20
+    mac_mini: 25
+    mac_studio: 45
+    imac: 70
+    mac_pro: 90
+    display: 80
 
   # UK import charges. Laptops are 0% customs duty, but 20% import VAT applies
   # to (item + shipping), plus a courier clearance/handling fee.
@@ -144,44 +193,60 @@ costs:
   uk_domestic_shipping_gbp: 8
 
 fx:
-  # Live JPY-per-GBP and USD-per-GBP rates are fetched automatically
+  # Live JPY/USD/EUR-per-GBP rates are fetched automatically
   # (frankfurter.dev, ECB data). These values are only used if the fetch fails.
-  # (Checked July 2026: ~216 JPY and ~1.33 USD per GBP.)
+  # (Checked July 2026: ~216 JPY, ~1.33 USD, ~1.17 EUR per GBP.)
   fallback_jpy_per_gbp: 216
   fallback_usd_per_gbp: 1.33
+  fallback_eur_per_gbp: 1.17
 
 scan:
-  # Marketplaces to scan. JP sources are bought through Buyee AND ZenMarket;
-  # eBay US items are bought directly (many US sellers ship to the UK via
-  # eBay International Shipping) or through a US package forwarder.
-  #   mercari = Mercari JP (huge C2C flea market, via official app API)
-  #   yahoo   = Yahoo! Auctions JP (via Buyee - Japan's biggest auction site)
-  #   rakuma  = Rakuten Rakuma (via Buyee - 2nd-biggest C2C flea market)
-  #   ebay_us = eBay US (the biggest US resale market; Brand New + Open Box,
-  #             US-located, Buy-It-Now listings)
-  #   swappa  = Swappa (US tech marketplace, human-verified listings. Needs
-  #             Google Chrome installed plus `pip install patchright` - its
-  #             Cloudflare wall requires a real, stealth-patched Chrome.
-  #             The Chrome runs MINIMIZED in the Dock while Swappa is being
-  #             scanned (never on screen) and is closed as soon as the scan
-  #             finishes. Home connections only - cloud runners get blocked.)
-  #   ebay_uk = eBay UK (domestic - no import VAT/shipping risk, UK keyboard,
-  #             UK returns; underpriced UK listings are the best deals of all)
-  # Remove any you don't want; add back any time. Mercari and eBay are the
-  # most reliable; yahoo + rakuma go through Buyee's browser path (needs
-  # Playwright installed).
-  sources: [mercari, yahoo, rakuma, ebay_us, swappa, ebay_uk]
-  # Search queries (sent as-is to every market - JP sellers list in romaji,
-  # so the same English phrases work on both sides).
+  # Marketplaces to scan. JP sources are bought through Buyee (and ZenMarket
+  # where it proxies them); eBay US/DE items are bought directly or through
+  # a package forwarder.
+  #   mercari    = Mercari JP (huge C2C flea market, via official app API)
+  #   yahoo      = Yahoo! Auctions JP (via Buyee - Japan's biggest auctions)
+  #   rakuma     = Rakuten Rakuma (via Buyee - 2nd-biggest C2C flea market)
+  #   paypay     = PayPay Flea Market (via Buyee - Yahoo's fixed-price app)
+  #   ebay_us    = eBay US (the biggest US resale market)
+  #   swappa     = Swappa (US, human-verified. Needs Google Chrome +
+  #                `pip install patchright`; home connections only)
+  #   craigslist = Craigslist US classifieds (see craigslist_cities below.
+  #                LOCAL PICKUP + CASH culture: you need someone in-city or a
+  #                seller willing to post - treat finds as leads, not clicks)
+  #   ebay_uk    = eBay UK (domestic - no import costs, UK returns)
+  #   gumtree    = Gumtree UK classifieds (domestic; often collection-only,
+  #                no buyer protection - meet locally, pay on collection)
+  #   ebay_de    = eBay Germany (biggest EU market; EUR prices, UK VAT on
+  #                import applies; QWERTZ keyboards on MacBooks/iMacs)
+  # Remove any you don't want; add back any time.
+  sources: [mercari, yahoo, rakuma, paypay, ebay_us, swappa, craigslist,
+            ebay_uk, gumtree, ebay_de]
+  # Search queries (sent to every market - JP sellers list product names in
+  # romaji, so the same phrases work everywhere). `family` picks the right
+  # price floor and shipping estimates for what the query is hunting.
   queries:
-    - "MacBook Pro M2"
-    - "MacBook Pro M3"
-    - "MacBook Pro M4"
-    - "MacBook Pro M5"
+    - {q: "MacBook Pro M2", family: macbook}
+    - {q: "MacBook Pro M3", family: macbook}
+    - {q: "MacBook Pro M4", family: macbook}
+    - {q: "MacBook Pro M5", family: macbook}
+    - {q: "Mac Studio", family: mac_studio}
+    - {q: "Mac mini M2", family: mac_mini}
+    - {q: "Mac mini M4", family: mac_mini}
+    - {q: "iMac M3", family: imac}
+    - {q: "iMac M4", family: imac}
+    - {q: "Mac Pro M2 Ultra", family: mac_pro}
+    - {q: "Apple Studio Display", family: display}
+    - {q: "iPad Pro", family: ipad_pro}
+    - {q: "iPad Air 13", family: ipad_air}
+    - {q: "iPad Air M4", family: ipad_air}
   # Mercari condition IDs to accept: 1 = brand new/unused, 2 = nearly unused
-  # (both RESALE tier), 3 = "no visible scratches or dirt" (PRACTICALLY NEW
-  # tier), 4 = "some scratches/dirt" (BEST VALUE section only).
-  mercari_conditions: [1, 2, 3, 4]
+  # (both RESALE tier), 3 = "no visible scratches or dirt" (LIKE-NEW tier).
+  # 4 ("some scratches/dirt") only gets fetched if value.enabled is true.
+  mercari_conditions: [1, 2, 3]
+  # Craigslist metros to search (the site has no nationwide search; each
+  # city is a separate request, so keep this list short and relevant).
+  craigslist_cities: [newyork, losangeles, sfbay, seattle]
   # Pages of Mercari results per query (about 120 items per page, newest first).
   mercari_pages: 2
   # Extra URL parameters for Yahoo Auctions search.
@@ -212,10 +277,18 @@ scan:
   # eBay UK search params (same format as the US ones above).
   ebay_uk_extra_params: "LH_ItemCondition=1000%7C1500&LH_BIN=1&LH_PrefLoc=1&_sop=10&_ipg=60"
   ebay_uk_personal_extra_params: "LH_ItemCondition=3000&LH_BIN=1&LH_PrefLoc=1&_sop=10&_ipg=60"
-  # Ignore listings below this price (filters out boxes, stickers, chargers, junk).
-  min_price_jpy: 60000
-  min_price_usd: 400
-  min_price_gbp: 350
+  # Ignore listings below these prices (filters out boxes, stickers, pencils,
+  # stands, chargers, junk). Per family because a near-new Mac mini M2 costs
+  # a fraction of a Mac Studio. Queries use the floor of their `family`.
+  min_price:
+    macbook:    {jpy: 60000,  usd: 400,  gbp: 350,  eur: 400}
+    mac_mini:   {jpy: 35000,  usd: 250,  gbp: 220,  eur: 250}
+    mac_studio: {jpy: 90000,  usd: 650,  gbp: 550,  eur: 650}
+    imac:       {jpy: 70000,  usd: 500,  gbp: 450,  eur: 500}
+    mac_pro:    {jpy: 250000, usd: 1800, gbp: 1500, eur: 1800}
+    display:    {jpy: 70000,  usd: 500,  gbp: 450,  eur: 500}
+    ipad_pro:   {jpy: 45000,  usd: 320,  gbp: 280,  eur: 320}
+    ipad_air:   {jpy: 40000,  usd: 300,  gbp: 260,  eur: 300}
   # How many promising listings to open fully each scan to hunt for a battery
   # cycle count in the description (slower, so capped).
   max_detail_fetch: 12
@@ -228,7 +301,10 @@ scan:
   # find does not wait for Swappa's browser to finish.
   watch_interval_minutes: 20
   fast_interval_minutes: 5
-  fast_sources: [mercari, ebay_uk, ebay_us]
+  # Quick-pass sources: cheap HTTP/API scans only (the expanded query list
+  # makes a full eBay site pass ~1-2 min, so the quick pass sticks to the
+  # fastest high-churn markets; everything else refreshes on the full scan).
+  fast_sources: [mercari, ebay_uk, gumtree]
 
 filters:
   # A listing containing any of these is skipped (junk / parts / box-only traps).
@@ -321,6 +397,18 @@ filters:
     - "icloud lock"
     - "mdm"
     - "demo unit"         # often DEP/MDM-enrolled corporate demo stock
+    # iPad / display accessory traps
+    - "pencil only"
+    - "ペンシルのみ"      # (Apple) Pencil only
+    - "for ipad"          # accessories: "Case/Keyboard for iPad Pro"
+    - "für ipad"          # ...and the German equivalents (eBay DE)
+    - "für das ipad"
+    - "für apple ipad"
+    - "für macbook"
+    - "stand only"
+    - "スタンドのみ"      # stand only
+    - "vesa adapter only"
+    - "箱・スタンド"      # box + stand (no display)
 
 # ------------------------------------------------------------------
 # UK AVERAGE PRICES (GBP) for NEW / SEALED / OPENED-BUT-UNUSED units,
@@ -335,44 +423,113 @@ filters:
 #   2) just edit the numbers below by hand.
 # ------------------------------------------------------------------
 models:
-  - {id: m2pro-14,  chip: M2 PRO, size: 14, uk_avg_gbp: 1000, uk_used_gbp: 751, base_spec: "16GB/512GB",
+  - {id: m2pro-14,  chip: M2 PRO, size: 14, uk_avg_gbp: 1000, uk_used_gbp: 750, base_spec: "16GB/512GB",
      ebay_query: "MacBook Pro 14 M2 Pro -case -cover -box -faulty -spares -repair -damaged"}
-  - {id: m2pro-16,  chip: M2 PRO, size: 16, uk_avg_gbp: 912, uk_used_gbp: 725, base_spec: "16GB/512GB",
+  - {id: m2pro-16,  chip: M2 PRO, size: 16, uk_avg_gbp: 912, uk_used_gbp: 735, base_spec: "16GB/512GB",
      ebay_query: "MacBook Pro 16 M2 Pro -case -cover -box -faulty -spares -repair -damaged"}
-  - {id: m2max-14,  chip: M2 MAX, size: 14, uk_avg_gbp: 1600, uk_used_gbp: 1190, base_spec: "32GB/1TB",
+  - {id: m2max-14,  chip: M2 MAX, size: 14, uk_avg_gbp: 1600, uk_used_gbp: 1231, base_spec: "32GB/1TB",
      ebay_query: "MacBook Pro 14 M2 Max -case -cover -box -faulty -spares -repair -damaged"}
-  - {id: m2max-16,  chip: M2 MAX, size: 16, uk_avg_gbp: 1800, uk_used_gbp: 1499, base_spec: "32GB/1TB",
+  - {id: m2max-16,  chip: M2 MAX, size: 16, uk_avg_gbp: 1799, uk_used_gbp: 1639, base_spec: "32GB/1TB",
      ebay_query: "MacBook Pro 16 M2 Max -case -cover -box -faulty -spares -repair -damaged"}
 
   - {id: m3-14,     chip: M3,     size: 14, uk_avg_gbp: 1050, base_spec: "8-16GB/512GB",
      ebay_query: "MacBook Pro 14 M3 -Pro -Max -case -cover -box -faulty -spares -repair -damaged"}
-  - {id: m3pro-14,  chip: M3 PRO, size: 14, uk_avg_gbp: 1073, uk_used_gbp: 802, base_spec: "18GB/512GB",
+  - {id: m3pro-14,  chip: M3 PRO, size: 14, uk_avg_gbp: 1078, uk_used_gbp: 823, base_spec: "18GB/512GB",
      ebay_query: "MacBook Pro 14 M3 Pro -case -cover -box -faulty -spares -repair -damaged"}
-  - {id: m3pro-16,  chip: M3 PRO, size: 16, uk_avg_gbp: 1750, uk_used_gbp: 1255, base_spec: "18GB/512GB",
+  - {id: m3pro-16,  chip: M3 PRO, size: 16, uk_avg_gbp: 1800, uk_used_gbp: 1300, base_spec: "18GB/512GB",
      ebay_query: "MacBook Pro 16 M3 Pro -case -cover -box -faulty -spares -repair -damaged"}
-  - {id: m3max-14,  chip: M3 MAX, size: 14, uk_avg_gbp: 2200, uk_used_gbp: 1741, base_spec: "36GB/1TB",
+  - {id: m3max-14,  chip: M3 MAX, size: 14, uk_avg_gbp: 2200, uk_used_gbp: 1750, base_spec: "36GB/1TB",
      ebay_query: "MacBook Pro 14 M3 Max -case -cover -box -faulty -spares -repair -damaged"}
-  - {id: m3max-16,  chip: M3 MAX, size: 16, uk_avg_gbp: 2450, uk_used_gbp: 2000, base_spec: "36GB/1TB",
+  - {id: m3max-16,  chip: M3 MAX, size: 16, uk_avg_gbp: 2380, uk_used_gbp: 2046, base_spec: "36GB/1TB",
      ebay_query: "MacBook Pro 16 M3 Max -case -cover -box -faulty -spares -repair -damaged"}
 
   - {id: m4-14,     chip: M4,     size: 14, uk_avg_gbp: 1250, base_spec: "16GB/512GB",
      ebay_query: "MacBook Pro 14 M4 -Pro -Max -case -cover -box -faulty -spares -repair -damaged"}
-  - {id: m4pro-14,  chip: M4 PRO, size: 14, uk_avg_gbp: 1600, uk_used_gbp: 1152, base_spec: "24GB/512GB",
+  - {id: m4pro-14,  chip: M4 PRO, size: 14, uk_avg_gbp: 1600, uk_used_gbp: 1299, base_spec: "24GB/512GB",
      ebay_query: "MacBook Pro 14 M4 Pro -case -cover -box -faulty -spares -repair -damaged"}
-  - {id: m4pro-16,  chip: M4 PRO, size: 16, uk_avg_gbp: 1761, uk_used_gbp: 1474, base_spec: "24GB/512GB",
+  - {id: m4pro-16,  chip: M4 PRO, size: 16, uk_avg_gbp: 1842, uk_used_gbp: 1499, base_spec: "24GB/512GB",
      ebay_query: "MacBook Pro 16 M4 Pro -case -cover -box -faulty -spares -repair -damaged"}
-  - {id: m4max-14,  chip: M4 MAX, size: 14, uk_avg_gbp: 2199, uk_used_gbp: 2047, base_spec: "36GB/1TB",
+  - {id: m4max-14,  chip: M4 MAX, size: 14, uk_avg_gbp: 2230, uk_used_gbp: 2047, base_spec: "36GB/1TB",
      ebay_query: "MacBook Pro 14 M4 Max -case -cover -box -faulty -spares -repair -damaged"}
-  - {id: m4max-16,  chip: M4 MAX, size: 16, uk_avg_gbp: 2520, uk_used_gbp: 2755, base_spec: "36GB/1TB",
+  - {id: m4max-16,  chip: M4 MAX, size: 16, uk_avg_gbp: 2501, uk_used_gbp: 2800, base_spec: "36GB/1TB",
      ebay_query: "MacBook Pro 16 M4 Max -case -cover -box -faulty -spares -repair -damaged"}
 
   - {id: m5-14,     chip: M5,     size: 14, uk_avg_gbp: 1350, base_spec: "16GB/512GB-1TB",
      ebay_query: "MacBook Pro 14 M5 -Pro -Max -case -cover -box -faulty -spares -repair -damaged"}
-  - {id: m5pro-14,  chip: M5 PRO, size: 14, uk_avg_gbp: 1760, uk_used_gbp: 1139, base_spec: "24GB/1TB",
+  - {id: m5pro-14,  chip: M5 PRO, size: 14, uk_avg_gbp: 1760, uk_used_gbp: 1180, base_spec: "24GB/1TB",
      ebay_query: "MacBook Pro 14 M5 Pro -case -cover -box -faulty -spares -repair -damaged"}
-  - {id: m5pro-16,  chip: M5 PRO, size: 16, uk_avg_gbp: 2100, uk_used_gbp: 1184, base_spec: "24GB/1TB",
+  - {id: m5pro-16,  chip: M5 PRO, size: 16, uk_avg_gbp: 2148, uk_used_gbp: 1175, base_spec: "24GB/1TB",
      ebay_query: "MacBook Pro 16 M5 Pro -case -cover -box -faulty -spares -repair -damaged"}
-  - {id: m5max-14,  chip: M5 MAX, size: 14, uk_avg_gbp: 2899, base_spec: "36GB/2TB",
+  - {id: m5max-14,  chip: M5 MAX, size: 14, uk_avg_gbp: 2899, uk_used_gbp: 2436, base_spec: "36GB/2TB",
      ebay_query: "MacBook Pro 14 M5 Max -case -cover -box -faulty -spares -repair -damaged"}
-  - {id: m5max-16,  chip: M5 MAX, size: 16, uk_avg_gbp: 3271, base_spec: "36GB/2TB",
+  - {id: m5max-16,  chip: M5 MAX, size: 16, uk_avg_gbp: 3100, base_spec: "36GB/2TB",
      ebay_query: "MacBook Pro 16 M5 Max -case -cover -box -faulty -spares -repair -damaged"}
+
+  # ---- Mac mini (M2 Jan 2023, M4 Oct 2024) --------------------------------
+  # uk_avg_gbp = what a near-new unit fetches on the UK market, July 2026
+  # estimates seeded from RRP and typical secondhand levels - refresh with
+  # `python macdeals.py ukprices --write` for real eBay-UK sold medians.
+  - {id: mini-m2,     family: mac_mini, chip: M2,     uk_avg_gbp: 350, uk_used_gbp: 364,  base_spec: "8GB/256GB",
+     ebay_query: "Mac mini M2 -Pro -case -mount -faulty -spares -repair -damaged"}
+  - {id: mini-m2pro,  family: mac_mini, chip: M2 PRO, uk_avg_gbp: 687, uk_used_gbp: 580,  base_spec: "16GB/512GB",
+     ebay_query: "Mac mini M2 Pro -case -mount -faulty -spares -repair -damaged"}
+  - {id: mini-m4,     family: mac_mini, chip: M4,     uk_avg_gbp: 600, uk_used_gbp: 593,  base_spec: "16GB/256GB",
+     ebay_query: "Mac mini M4 -Pro -case -mount -faulty -spares -repair -damaged"}
+  - {id: mini-m4pro,  family: mac_mini, chip: M4 PRO, uk_avg_gbp: 1300, uk_used_gbp: 1277, base_spec: "24GB/512GB",
+     ebay_query: "Mac mini M4 Pro -case -mount -faulty -spares -repair -damaged"}
+
+  # ---- Mac Studio (M1 2022, M2 2023, M4 Max/M3 Ultra Mar 2025) ------------
+  - {id: studio-m1max,   family: mac_studio, chip: M1 MAX,   uk_avg_gbp: 1000, uk_used_gbp: 996,  base_spec: "32GB/512GB",
+     ebay_query: "Mac Studio M1 Max -faulty -spares -repair -damaged"}
+  - {id: studio-m1ultra, family: mac_studio, chip: M1 ULTRA, uk_avg_gbp: 2200, uk_used_gbp: 2377, base_spec: "64GB/1TB",
+     ebay_query: "Mac Studio M1 Ultra -faulty -spares -repair -damaged"}
+  - {id: studio-m2max,   family: mac_studio, chip: M2 MAX,   uk_avg_gbp: 1350, uk_used_gbp: 1500, base_spec: "32GB/512GB",
+     ebay_query: "Mac Studio M2 Max -faulty -spares -repair -damaged"}
+  - {id: studio-m2ultra, family: mac_studio, chip: M2 ULTRA, uk_avg_gbp: 2452, uk_used_gbp: 3974, base_spec: "64GB/1TB",
+     ebay_query: "Mac Studio M2 Ultra -faulty -spares -repair -damaged"}
+  - {id: studio-m4max,   family: mac_studio, chip: M4 MAX,   uk_avg_gbp: 1900, uk_used_gbp: 1894, base_spec: "36GB/512GB",
+     ebay_query: "Mac Studio M4 Max -faulty -spares -repair -damaged"}
+  - {id: studio-m3ultra, family: mac_studio, chip: M3 ULTRA, uk_avg_gbp: 3800, uk_used_gbp: 3820, base_spec: "96GB/1TB",
+     ebay_query: "Mac Studio M3 Ultra -faulty -spares -repair -damaged"}
+
+  # ---- iMac 24" (M3 Oct 2023, M4 Oct 2024; M1 is 2021 = out of scope) -----
+  - {id: imac-m3, family: imac, chip: M3, size: 24, uk_avg_gbp: 1000, uk_used_gbp: 682,  base_spec: "8GB/256GB",
+     ebay_query: "iMac 24 M3 -faulty -spares -repair -damaged -cracked"}
+  - {id: imac-m4, family: imac, chip: M4, size: 24, uk_avg_gbp: 1100, uk_used_gbp: 885, base_spec: "16GB/256GB",
+     ebay_query: "iMac 24 M4 -faulty -spares -repair -damaged -cracked"}
+
+  # ---- Mac Pro (M2 Ultra, June 2023 - thin market, big ticket) ------------
+  - {id: macpro-m2ultra, family: mac_pro, chip: M2 ULTRA, uk_avg_gbp: 3900, base_spec: "64GB/1TB",
+     ebay_query: "Mac Pro M2 Ultra -rack -faulty -spares -repair -damaged"}
+
+  # ---- Apple Studio Display (Mar 2022; standard glass/tilt stand base) ----
+  # Nano-texture glass and the height-adjustable stand fetch £150-350 more -
+  # treat a cheap one of those as a bonus, the benchmark is the base model.
+  - {id: studio-display, family: display, uk_avg_gbp: 975, base_spec: "27-inch",
+     ebay_query: "Apple Studio Display -mount -arm -stand only -faulty -cracked -spares -repair"}
+
+  # ---- iPad Pro (M2 Oct 2022, M4 May 2024, M5 Oct 2025) --------------------
+  - {id: ipadpro-m2-11,  family: ipad_pro, chip: M2, size: 11,   uk_avg_gbp: 645, uk_used_gbp: 422,  base_spec: "8GB/128GB",
+     ebay_query: "iPad Pro 11 M2 -case -keyboard -pencil -faulty -cracked -spares -repair"}
+  - {id: ipadpro-m2-129, family: ipad_pro, chip: M2, size: 12.9, uk_avg_gbp: 700, uk_used_gbp: 478,  base_spec: "8GB/128GB",
+     ebay_query: "iPad Pro 12.9 M2 -case -keyboard -pencil -faulty -cracked -spares -repair"}
+  - {id: ipadpro-m4-11,  family: ipad_pro, chip: M4, size: 11,   uk_avg_gbp: 890, uk_used_gbp: 608,  base_spec: "8GB/256GB",
+     ebay_query: "iPad Pro 11 M4 -case -keyboard -pencil -faulty -cracked -spares -repair"}
+  - {id: ipadpro-m4-13,  family: ipad_pro, chip: M4, size: 13,   uk_avg_gbp: 919, uk_used_gbp: 700, base_spec: "8GB/256GB",
+     ebay_query: "iPad Pro 13 M4 -case -keyboard -pencil -faulty -cracked -spares -repair"}
+  - {id: ipadpro-m5-11,  family: ipad_pro, chip: M5, size: 11,   uk_avg_gbp: 830, uk_used_gbp: 750,  base_spec: "12GB/256GB",
+     ebay_query: "iPad Pro 11 M5 -case -keyboard -pencil -faulty -cracked -spares -repair"}
+  - {id: ipadpro-m5-13,  family: ipad_pro, chip: M5, size: 13,   uk_avg_gbp: 1080, uk_used_gbp: 925, base_spec: "12GB/256GB",
+     ebay_query: "iPad Pro 13 M5 -case -keyboard -pencil -faulty -cracked -spares -repair"}
+
+  # ---- iPad Air (only models whose near-new average clears ~£500) ---------
+  # (11" M2/M3 Airs average ~£430-480 near-new - under the bar, so left out.
+  #  Add them here any time if you want them anyway.)
+  - {id: ipadair-m2-13, family: ipad_air, chip: M2, size: 13, uk_avg_gbp: 510, uk_used_gbp: 450, base_spec: "8GB/128GB",
+     ebay_query: "iPad Air 13 M2 -case -keyboard -pencil -faulty -cracked -spares -repair"}
+  - {id: ipadair-m3-13, family: ipad_air, chip: M3, size: 13, uk_avg_gbp: 613, uk_used_gbp: 500, base_spec: "8GB/128GB",
+     ebay_query: "iPad Air 13 M3 -case -keyboard -pencil -faulty -cracked -spares -repair"}
+  - {id: ipadair-m4-11, family: ipad_air, chip: M4, size: 11, uk_avg_gbp: 545, uk_used_gbp: 456, base_spec: "12GB/128GB",
+     ebay_query: "iPad Air 11 M4 -case -keyboard -pencil -faulty -cracked -spares -repair"}
+  - {id: ipadair-m4-13, family: ipad_air, chip: M4, size: 13, uk_avg_gbp: 680, uk_used_gbp: 580, base_spec: "12GB/128GB",
+     ebay_query: "iPad Air 13 M4 -case -keyboard -pencil -faulty -cracked -spares -repair"}

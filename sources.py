@@ -1,7 +1,7 @@
 """
-sources.py - fetches listings from Mercari JP, Yahoo! Auctions JP and Rakuma
-(the marketplaces that supply the bulk of Buyee's and ZenMarket's second-hand
-stock), plus eBay US live listings and an eBay-UK sold-listings price helper.
+sources.py - fetches listings from Mercari JP, Yahoo! Auctions JP, Rakuma and
+PayPay Flea Market (the marketplaces behind Buyee/ZenMarket), eBay US/UK/DE,
+Swappa, Craigslist and Gumtree, plus an eBay-UK sold-listings price helper.
 """
 from __future__ import annotations
 
@@ -15,7 +15,34 @@ from urllib.parse import quote
 
 from bs4 import BeautifulSoup
 
-from pricing import Listing, find_cycle_count
+from pricing import Listing, find_cycle_count, is_wanted_ad
+
+
+def scan_queries(cfg) -> list[tuple[str, str]]:
+    """(query, family) pairs from config; tolerates the old plain-string
+    query format (treated as MacBook queries)."""
+    out = []
+    for x in cfg["scan"]["queries"]:
+        if isinstance(x, dict):
+            out.append((str(x["q"]), str(x.get("family", "macbook"))))
+        else:
+            out.append((str(x), "macbook"))
+    return out
+
+
+_LEGACY_MIN_KEYS = {"jpy": "min_price_jpy", "usd": "min_price_usd",
+                    "gbp": "min_price_gbp"}
+_MIN_DEFAULTS = {"jpy": 40000, "usd": 300, "gbp": 260, "eur": 300}
+
+
+def min_price_for(cfg, family: str, cur: str) -> int:
+    """Price floor for a query family in a currency ('jpy'/'usd'/'gbp'/'eur')."""
+    table = cfg["scan"].get("min_price") or {}
+    fam = table.get(family) or table.get("macbook") or {}
+    if cur in fam:
+        return int(fam[cur])
+    legacy = cfg["scan"].get(_LEGACY_MIN_KEYS.get(cur, ""), None)
+    return int(legacy if legacy is not None else _MIN_DEFAULTS[cur])
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
@@ -143,13 +170,14 @@ def _run_async(factory):
     return box.get("v")
 
 
-async def _mercari_search_async(queries, conditions, pages, min_price) -> list[Listing]:
+async def _mercari_search_async(queries, conditions, pages) -> list[Listing]:
+    """queries = [(text, min_price_jpy), ...]"""
     from mercapi import Mercapi
     from mercapi.requests.search import SearchRequestData
 
     m = Mercapi()
     out: dict[str, Listing] = {}
-    for q in queries:
+    for q, min_price in queries:
         try:
             res = await m.search(
                 q,
@@ -206,9 +234,11 @@ def scan_mercari(cfg) -> list[Listing]:
         conds = [c for c in conds if int(c) != 3]
     if not cfg.get("value", {}).get("enabled", True):
         conds = [c for c in conds if int(c) != 4]
+    queries = [(q, min_price_for(cfg, fam, "jpy"))
+               for q, fam in scan_queries(cfg)]
     try:
         return _run_async(lambda: _mercari_search_async(
-            s["queries"], conds, s["mercari_pages"], s["min_price_jpy"]))
+            queries, conds, s["mercari_pages"]))
     except Exception as e:
         print(f"  [mercari] scan failed entirely: {e}")
         return []
@@ -393,6 +423,18 @@ def _buyee_get(url: str) -> str:
     return html
 
 
+def _buyee_variants(cfg) -> list[tuple[str, str]]:
+    """(search text, family) pairs for the Buyee-backed sources. Buyee's own
+    condition filter can't be relied on, so each query is searched with the
+    words Japanese sellers reliably put in titles: 未使用 (unused) / 新品
+    (brand new) for the resale tier, plus 美品 (beautiful condition - catches
+    極美品/超美品 too) for the like-new tier."""
+    words = ["未使用", "新品"]
+    if cfg.get("personal", {}).get("enabled", True):
+        words.append("美品")
+    return [(f"{q} {w}", fam) for q, fam in scan_queries(cfg) for w in words]
+
+
 def scan_yahoo(cfg, debug: bool = False) -> list[Listing]:
     """Yahoo! Auctions listings - fetched VIA BUYEE.
 
@@ -412,15 +454,8 @@ def scan_yahoo(cfg, debug: bool = False) -> list[Listing]:
               "                python3 -m pip install playwright\n"
               "                python3 -m playwright install chromium")
     extra = s.get("buyee_extra_params", "translationType=98&istatus=2")
-    # Buyee's own condition filter can't be relied on, so each query is
-    # searched with the words Japanese sellers reliably put in titles:
-    # 未使用 (unused) / 新品 (brand new) for the resale tier, plus 美品
-    # (beautiful condition - catches 極美品/超美品 too) for practically-new.
-    words = ["未使用", "新品"]
-    if cfg.get("personal", {}).get("enabled", True):
-        words.append("美品")
-    variants = [f"{q} {w}" for q in s["queries"] for w in words]
-    for i, q in enumerate(variants):
+    for i, (q, fam) in enumerate(_buyee_variants(cfg)):
+        min_jpy = min_price_for(cfg, fam, "jpy")
         url = f"https://buyee.jp/item/search/query/{quote(q)}?{extra}"
         try:
             html = _buyee_get(url)
@@ -472,7 +507,7 @@ def scan_yahoo(cfg, debug: bool = False) -> list[Listing]:
                 continue
 
             price, is_auction = _pick_price(text)
-            if price is None or price < int(s["min_price_jpy"]):
+            if price is None or price < min_jpy:
                 continue
             out[item_id] = Listing(
                 item_id=item_id,
@@ -630,11 +665,8 @@ def scan_rakuma(cfg, debug: bool = False) -> list[Listing]:
         print("  [rakuma/buyee] WARNING: Playwright is not installed - Rakuma "
               "needs the browser path. Install it (see the Yahoo note above).")
     extra = s.get("rakuma_extra_params", "status=on_sale")
-    words = ["未使用", "新品"]
-    if cfg.get("personal", {}).get("enabled", True):
-        words.append("美品")
-    variants = [f"{q} {w}" for q in s["queries"] for w in words]
-    for i, q in enumerate(variants):
+    for i, (q, fam) in enumerate(_buyee_variants(cfg)):
+        min_jpy = min_price_for(cfg, fam, "jpy")
         url = f"https://buyee.jp/rakuma/search?keyword={quote(q)}&{extra}"
         try:
             html = _buyee_get(url)
@@ -681,7 +713,7 @@ def scan_rakuma(cfg, debug: bool = False) -> list[Listing]:
                 continue
             # Rakuma is fixed-price (not auctions), so take the card's yen price.
             price, _ = _pick_price(text)
-            if price is None or price < int(s["min_price_jpy"]):
+            if price is None or price < min_jpy:
                 continue
             out[item_id] = Listing(
                 item_id=item_id,
@@ -716,6 +748,110 @@ def fetch_rakuma_cycles(item_id: str) -> Optional[int]:
 
 
 # ============================================================================
+# PAYPAY FLEA MARKET  (Yahoo's fixed-price flea-market app, via Buyee)
+# ============================================================================
+
+# PayPay item links on Buyee: /paypayfleamarket/item/<id> (ids like z12345...)
+BUYEE_PAYPAY_HREF_RE = re.compile(
+    r"/paypayfleamarket/item/([A-Za-z0-9_-]{6,})", re.I)
+
+
+def scan_paypay(cfg, debug: bool = False) -> list[Listing]:
+    """PayPay Flea Market listings - fetched VIA BUYEE, exactly like Rakuma.
+    PayPay is Yahoo! JAPAN's Mercari-style fixed-price app; Buyee proxies it
+    for overseas buyers (ZenMarket doesn't, so links are Buyee + original)."""
+    out: dict[str, Listing] = {}
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        print("  [paypay/buyee] WARNING: Playwright is not installed - PayPay "
+              "needs the browser path. Install it (see the Yahoo note above).")
+    extra = cfg["scan"].get("paypay_extra_params", "")
+    for i, (q, fam) in enumerate(_buyee_variants(cfg)):
+        min_jpy = min_price_for(cfg, fam, "jpy")
+        url = f"https://buyee.jp/paypayfleamarket/search?keyword={quote(q)}"
+        if extra:
+            url += "&" + extra
+        try:
+            html = _buyee_get(url)
+        except FetchError as e:
+            print(f"  [paypay/buyee] search '{q}' failed: {e}")
+            if debug and e.body:
+                with open("debug_paypay_blocked.html", "w", encoding="utf-8") as f:
+                    f.write(e.body)
+                print("  [paypay/buyee] saved Buyee's block/error page to "
+                      "debug_paypay_blocked.html - send it to Claude for a fix.")
+            continue
+        except Exception as e:
+            print(f"  [paypay/buyee] search '{q}' failed: {e}")
+            continue
+        if debug:
+            fn = f"debug_paypay_{re.sub(r'[^A-Za-z0-9]+','_',q)}{i}.html"
+            with open(fn, "w", encoding="utf-8") as f:
+                f.write(html)
+            print(f"  [paypay/buyee] saved raw page to {fn}")
+
+        soup = BeautifulSoup(html, "html.parser")
+        anchors = [a for a in soup.select("a[href*='paypayfleamarket']")
+                   if BUYEE_PAYPAY_HREF_RE.search(a.get("href", ""))]
+        found_here = 0
+        for a in anchors:
+            href = a.get("href", "")
+            m = BUYEE_PAYPAY_HREF_RE.search(href)
+            if not m:
+                continue
+            item_id = m.group(1)
+            if item_id in out:
+                continue
+            card, text = _climb_to_card(a)
+            title = _anchor_title(a, card)
+            if not title:
+                continue
+            if _card_is_sold(card, text):
+                continue
+            blob = title + " " + text
+            grade = _jp_grade(blob)
+            if grade is None:
+                continue
+            if grade == "resale" and "中古" in blob and "未使用" not in blob:
+                continue
+            # PayPay is fixed-price (not auctions)
+            price, _ = _pick_price(text)
+            if price is None or price < min_jpy:
+                continue
+            out[item_id] = Listing(
+                item_id=item_id,
+                source="paypay",
+                title=title,
+                price=price,
+                is_auction=False,
+                condition="未使用" if grade == "resale" else "美品 (used, like new)",
+                buyee_path=href,          # exact link we found = always valid
+                grade=grade,
+            )
+            found_here += 1
+        if not anchors:
+            print(f"  [paypay/buyee] 0 items parsed for '{q}' - Buyee's PayPay "
+                  f"layout may have changed. Run with --debug and send the "
+                  f"debug_paypay_*.html file to Claude.")
+        elif debug:
+            print(f"  [paypay/buyee] '{q}': {len(anchors)} cards on page, "
+                  f"{found_here} passed the new/unused title check")
+        time.sleep(1.5)
+    return list(out.values())
+
+
+def fetch_paypay_cycles(item_id: str) -> Optional[int]:
+    """Battery-cycle lookup for a PayPay item via its Buyee item page."""
+    try:
+        html = _buyee_get(f"https://buyee.jp/paypayfleamarket/item/{item_id}")
+        text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
+        return find_cycle_count(text)
+    except Exception:
+        return None
+
+
+# ============================================================================
 # EBAY US  -  live Brand New / Open Box listings (the biggest US resale market)
 # ============================================================================
 #
@@ -734,9 +870,17 @@ EBAY_US_PRICE_RE = re.compile(r"\$\s*([\d,]+(?:\.\d{2})?)")
 EBAY_PRICE_RES = {
     "USD": EBAY_US_PRICE_RE,
     "GBP": re.compile(r"£\s*([\d,]+(?:\.\d{2})?)"),
+    # eBay.de shows "EUR 1.234,56" (dot thousands, comma decimals)
+    "EUR": re.compile(r"(?:EUR|€)\s*([\d.]+(?:,\d{2})?)"),
 }
 # any supported price symbol - used only to detect "this element has a price"
-EBAY_ANY_PRICE_RE = re.compile(r"[\$£]\s*[\d,]{3,}")
+EBAY_ANY_PRICE_RE = re.compile(r"[\$£€]\s*[\d,.]{3,}|EUR\s*[\d.]{3,}")
+
+
+def _parse_price_number(g: str, currency: str) -> float:
+    if currency == "EUR":       # European format: 1.234,56
+        return float(g.replace(".", "").replace(",", "."))
+    return float(g.replace(",", ""))
 
 
 def _first_price_in(text: str, currency: str = "USD") -> Optional[float]:
@@ -747,7 +891,7 @@ def _first_price_in(text: str, currency: str = "USD") -> Optional[float]:
     for m in rx.finditer(text):
         if re.match(r"\s*/", text[m.end():m.end() + 4]):
             continue
-        return float(m.group(1).replace(",", ""))
+        return _parse_price_number(m.group(1), currency)
     return None
 
 
@@ -789,19 +933,23 @@ def _ebay_result_cards(soup) -> list:
 
 # title claims that justify treating an eBay "Used" listing as practically
 # new; the cycle-count limit is enforced separately on top of this
+# (German terms cover eBay.de listings)
 EBAY_LIKE_NEW_RE = re.compile(
     r"like\s*new|mint|pristine|excellent\s*cond|flawless|barely\s*used|"
     r"lightly\s*used|hardly\s*used|light\s*use|as\s*new|"
-    r"\b\d{1,3}\s*(?:battery\s*)?cycles?\b|cycle\s*count",
+    r"wie\s*neu|neuwertig|kaum\s*(?:be)?nutzt|top\s*zustand|"
+    r"\b\d{1,3}\s*(?:battery\s*)?cycles?\b|cycle\s*count|ladezyklen",
     re.I)
 
 
-# one parser, two eBay sites - the page structure is identical
+# one parser, three eBay sites - the page structure is identical
 _EBAY_SITES = {
     "ebay_us": {"domain": "www.ebay.com", "currency": "USD", "lang": "en-US",
-                "keyboard": "US", "min_key": "min_price_usd", "min_default": 400},
+                "keyboard": "US", "cur_key": "usd"},
     "ebay_uk": {"domain": "www.ebay.co.uk", "currency": "GBP", "lang": "en-GB",
-                "keyboard": "UK", "min_key": "min_price_gbp", "min_default": 350},
+                "keyboard": "UK", "cur_key": "gbp"},
+    "ebay_de": {"domain": "www.ebay.de", "currency": "EUR", "lang": "de",
+                "keyboard": "EU", "cur_key": "eur"},
 }
 _EBAY_NEW_PARAMS = "LH_ItemCondition=1000%7C1500&LH_BIN=1&LH_PrefLoc=1&_sop=10&_ipg=60"
 _EBAY_USED_PARAMS = "LH_ItemCondition=3000&LH_BIN=1&LH_PrefLoc=1&_sop=10&_ipg=60"
@@ -818,6 +966,13 @@ def scan_ebay_uk(cfg, debug: bool = False) -> list[Listing]:
     return _scan_ebay(cfg, "ebay_uk", debug)
 
 
+def scan_ebay_de(cfg, debug: bool = False) -> list[Listing]:
+    """eBay Germany - the biggest EU marketplace. Same page structure as the
+    US/UK sites; EUR prices; MacBooks/iMacs carry QWERTZ keyboards (flagged),
+    keyboardless products are identical stock at often-lower EU prices."""
+    return _scan_ebay(cfg, "ebay_de", debug)
+
+
 def _scan_ebay(cfg, source: str, debug: bool) -> list[Listing]:
     """eBay search results in two passes:
     pass 1 (new)  - condition Brand New (1000) + Open box (1500) -> resale;
@@ -825,27 +980,26 @@ def _scan_ebay(cfg, source: str, debug: bool) -> list[Listing]:
                     the rest -> "good" (value section only).
     Domestically located, Buy-It-Now, newest first; parsed tolerantly."""
     s = cfg["scan"]
-    site = _EBAY_SITES[source]
-    min_price = int(s.get(site["min_key"], site["min_default"]))
     out: dict[str, Listing] = {}
     _ebay_pass(cfg, source, s.get(f"{source}_extra_params", _EBAY_NEW_PARAMS),
-               min_price, "new", out, debug)
+               "new", out, debug)
     if (cfg.get("personal", {}).get("enabled", True)
             or cfg.get("value", {}).get("enabled", True)):
         _ebay_pass(cfg, source,
                    s.get(f"{source}_personal_extra_params", _EBAY_USED_PARAMS),
-                   min_price, "used", out, debug)
+                   "used", out, debug)
     return list(out.values())
 
 
-def _ebay_pass(cfg, source: str, extra: str, min_price: int, mode: str,
+def _ebay_pass(cfg, source: str, extra: str, mode: str,
                out: dict, debug: bool) -> None:
     site = _EBAY_SITES[source]
     domain, currency = site["domain"], site["currency"]
     home = f"https://{domain}/"
     personal_on = cfg.get("personal", {}).get("enabled", True)
     value_on = cfg.get("value", {}).get("enabled", True)
-    for q in cfg["scan"]["queries"]:
+    for q, fam in scan_queries(cfg):
+        min_price = min_price_for(cfg, fam, site["cur_key"])
         url = (f"https://{domain}/sch/i.html?_nkw=" + quote(q)
                + "&_udlo=" + str(min_price) + "&" + extra)
         cards, html, fetch_failed = [], "", False
@@ -866,7 +1020,8 @@ def _ebay_pass(cfg, source: str, extra: str, min_price: int, mode: str,
                 break
             # When a query has few exact hits, eBay pads the page with a
             # "Results matching fewer words" section - don't parse that part.
-            cut = re.search(r"Results matching fewer words", html, re.I)
+            cut = re.search(r"Results matching fewer words"
+                            r"|Ergebnisse f.r weniger Suchbegriffe", html, re.I)
             if cut:
                 html = html[:cut.start()]
             cards = _ebay_result_cards(BeautifulSoup(html, "html.parser"))
@@ -907,8 +1062,10 @@ def _ebay_pass(cfg, source: str, extra: str, min_price: int, mode: str,
                 continue
             low = text.lower()
             # pickup-only listings can't be posted to the buyer
-            if (("local pickup" in low or "collection in person" in low)
-                    and "shipping" not in low and "postage" not in low):
+            if (("local pickup" in low or "collection in person" in low
+                 or "nur abholung" in low)
+                    and "shipping" not in low and "postage" not in low
+                    and "versand" not in low):
                 continue
             cond_m = EBAY_COND_RE.search(text)
             if mode == "used":
@@ -927,9 +1084,9 @@ def _ebay_pass(cfg, source: str, extra: str, min_price: int, mode: str,
                 url=f"https://{domain}/itm/{item_id}",
                 grade=grade,
             )
-            # market default layouts: US = ANSI, UK = ISO-GB
+            # market default layouts: US = ANSI, UK = ISO-GB, DE = QWERTZ
             out[item_id].keyboard = site["keyboard"]
-            if "best offer" in low:
+            if "best offer" in low or "preisvorschlag" in low:
                 out[item_id].best_offer = True
             found_here += 1
         if not cards:
@@ -950,6 +1107,10 @@ def fetch_ebay_uk_cycles(item_id: str) -> Optional[int]:
     return _fetch_ebay_cycles(item_id, "ebay_uk")
 
 
+def fetch_ebay_de_cycles(item_id: str) -> Optional[int]:
+    return _fetch_ebay_cycles(item_id, "ebay_de")
+
+
 def _fetch_ebay_cycles(item_id: str, source: str) -> Optional[int]:
     """Battery-cycle lookup from the full eBay item page (sellers of
     lightly-used units usually state it in the description)."""
@@ -958,6 +1119,225 @@ def _fetch_ebay_cycles(item_id: str, source: str) -> Optional[int]:
     try:
         html = _http_get(f"{home}itm/{item_id}", referer=home, warmup=home,
                          lang=site["lang"])
+        text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
+        return find_cycle_count(text)
+    except Exception:
+        return None
+
+
+# ============================================================================
+# CRAIGSLIST (US classifieds) + GUMTREE (UK classifieds)
+# ============================================================================
+#
+# Classifieds have no condition filters and no buyer protection, so the bar
+# is strict: only titles that CLAIM new/sealed (resale tier) or like-new
+# (personal tier) are accepted, and "wanted"/"we buy" ads are dropped.
+# Craigslist is local-pickup/cash culture - finds there are leads to act on
+# via a US contact (or a seller willing to post), not one-click buys.
+
+_EN_NEW_RE = re.compile(
+    r"\bsealed\b|brand\s*new|new\s*in\s*box|\bbnib\b|\bunopened\b|"
+    r"never\s*(?:used|opened)|\bunused\b|new,?\s*sealed", re.I)
+
+# classifieds get ONE broad query per product family (their search is fuzzy
+# and their rate limits are touchy - fewer, broader requests win)
+_BROAD_QUERY = {"macbook": "MacBook Pro", "mac_mini": "Mac mini",
+                "mac_studio": "Mac Studio", "imac": "iMac",
+                "mac_pro": "Mac Pro", "display": "Apple Studio Display",
+                "ipad_pro": "iPad Pro", "ipad_air": "iPad Air"}
+
+
+def _broad_queries(cfg) -> list[tuple[str, str]]:
+    fams, out = set(), []
+    for _, fam in scan_queries(cfg):
+        if fam not in fams and fam in _BROAD_QUERY:
+            fams.add(fam)
+            out.append((_BROAD_QUERY[fam], fam))
+    return out
+
+
+def _en_grade(title: str) -> Optional[str]:
+    """Near-new-only grading for classifieds titles: 'resale' (claims new/
+    sealed), 'personal' (claims like-new), or None (not provably near-new)."""
+    if _EN_NEW_RE.search(title):
+        return "resale"
+    if EBAY_LIKE_NEW_RE.search(title):
+        return "personal"
+    return None
+
+
+def scan_craigslist(cfg, debug: bool = False) -> list[Listing]:
+    """Craigslist search across the metros in scan.craigslist_cities, using
+    the static (no-JavaScript) results markup. Computers-for-sale-by-owner
+    section; near-new title claims only."""
+    cities = [str(c) for c in cfg["scan"].get("craigslist_cities",
+                                              ["newyork", "losangeles",
+                                               "sfbay", "seattle"])]
+    out: dict[str, Listing] = {}
+    for q, fam in _broad_queries(cfg):
+        min_usd = min_price_for(cfg, fam, "usd")
+        for city in cities:
+            url = (f"https://{city}.craigslist.org/search/sya?query="
+                   + quote(q) + f"&min_price={min_usd}")
+            try:
+                html = _http_get(url, lang="en-US")
+            except Exception as e:
+                print(f"  [craigslist] {city} search '{q}' failed: {e}")
+                if debug and isinstance(e, FetchError) and e.body:
+                    with open("debug_craigslist_blocked.html", "w",
+                              encoding="utf-8") as f:
+                        f.write(e.body)
+                continue
+            if debug:
+                fn = (f"debug_craigslist_{city}_"
+                      f"{re.sub(r'[^A-Za-z0-9]+', '_', q)}.html")
+                with open(fn, "w", encoding="utf-8") as f:
+                    f.write(html)
+            soup = BeautifulSoup(html, "html.parser")
+            results = soup.select("li.cl-static-search-result")
+            found_here = 0
+            for li in results:
+                a = li.select_one("a[href]")
+                t_el = li.select_one(".title")
+                p_el = li.select_one(".price")
+                if not a or not t_el:
+                    continue
+                title = t_el.get_text(" ", strip=True)
+                if len(title) < 8 or is_wanted_ad(title):
+                    continue
+                grade = _en_grade(title)
+                if grade is None:
+                    continue
+                href = a.get("href", "")
+                item_id = href.rstrip("/").rsplit("/", 1)[-1][:40]
+                if not item_id or item_id in out:
+                    continue
+                price = _first_usd_price(p_el.get_text(" ", strip=True)
+                                         if p_el else "")
+                if price is None or price < min_usd:
+                    continue
+                out[item_id] = Listing(
+                    item_id=item_id,
+                    source="craigslist",
+                    title=title,
+                    price=price,
+                    currency="USD",
+                    condition=("seller says new/sealed" if grade == "resale"
+                               else "seller says like new"),
+                    url=href,
+                    grade=grade,
+                )
+                out[item_id].keyboard = "US"
+                found_here += 1
+            if debug:
+                print(f"  [craigslist] {city} '{q}': {len(results)} results, "
+                      f"{found_here} usable")
+            time.sleep(1.2)
+    return list(out.values())
+
+
+def fetch_craigslist_cycles(item_id: str) -> Optional[int]:
+    return None      # listing URLs vary by city; not worth a fetch
+
+
+GUMTREE_ID_RE = re.compile(r"/(\d{8,})/?$")
+
+
+def scan_gumtree(cfg, debug: bool = False) -> list[Listing]:
+    """Gumtree UK search - domestic classifieds. Underpriced local listings
+    can be the best flips of all (no import costs), but there's no buyer
+    protection: meet the seller, test the machine, pay on collection."""
+    out: dict[str, Listing] = {}
+    # Gumtree rate-limits after ~5 quick searches. Rotate the starting
+    # family each scan and STOP at the first rate-limit, so consecutive
+    # scans between them cover every family without burning the window.
+    qs = _broad_queries(cfg)
+    if qs:
+        start = int(time.time() // 900) % len(qs)
+        qs = qs[start:] + qs[:start]
+    for q, fam in qs:
+        min_gbp = min_price_for(cfg, fam, "gbp")
+        url = ("https://www.gumtree.com/search?search_category=all&q="
+               + quote(q) + f"&min_price={min_gbp}")
+        try:
+            html = _http_get(url, referer="https://www.gumtree.com/",
+                             warmup="https://www.gumtree.com/", lang="en-GB")
+        except Exception as e:
+            print(f"  [gumtree] search '{q}' failed: {e}")
+            if debug and isinstance(e, FetchError) and e.body:
+                with open("debug_gumtree_blocked.html", "w",
+                          encoding="utf-8") as f:
+                    f.write(e.body)
+                print("  [gumtree] saved the block page to "
+                      "debug_gumtree_blocked.html")
+            if isinstance(e, FetchError) and e.status == 247:
+                print("  [gumtree] rate-limited - stopping here this scan "
+                      "(the rotation resumes from the next family next scan)")
+                break
+            continue
+        if debug:
+            fn = f"debug_gumtree_{re.sub(r'[^A-Za-z0-9]+', '_', q)}.html"
+            with open(fn, "w", encoding="utf-8") as f:
+                f.write(html)
+        soup = BeautifulSoup(html, "html.parser")
+        anchors = soup.select('a[data-q="search-result-anchor"]')
+        found_here = 0
+        for a in anchors:
+            href = a.get("href", "")
+            m = GUMTREE_ID_RE.search(href)
+            if not m:
+                continue
+            item_id = m.group(1)
+            if item_id in out:
+                continue
+            text = a.get_text(" ", strip=True)
+            # title: a heading element when present, else the text before the
+            # price (tile text runs "[Featured] [photo-count] TITLE £PRICE …")
+            t_el = a.select_one("h2, h3, [data-q='tile-title']")
+            title = t_el.get_text(" ", strip=True) if t_el else \
+                re.sub(r"^\s*(?:FEATURED\s*)?\d{0,2}\s*", "",
+                       text.split("£")[0], flags=re.I).strip()
+            if len(title) < 8 or is_wanted_ad(title):
+                continue
+            grade = _en_grade(title)
+            if grade is None:
+                continue
+            pm = re.search(r"£\s*([\d,]+)", text)
+            if not pm:
+                continue
+            price = float(pm.group(1).replace(",", ""))
+            if price < min_gbp:
+                continue
+            out[item_id] = Listing(
+                item_id=item_id,
+                source="gumtree",
+                title=title,
+                price=price,
+                currency="GBP",
+                condition=("seller says new/sealed" if grade == "resale"
+                           else "seller says like new"),
+                url=("https://www.gumtree.com" + href
+                     if href.startswith("/") else href),
+                grade=grade,
+            )
+            out[item_id].keyboard = "UK"
+            found_here += 1
+        if not anchors:
+            print(f"  [gumtree] 0 result tiles for '{q}' - Gumtree may have "
+                  f"changed its markup or blocked the request. Run with "
+                  f"--debug and send debug_gumtree_*.html to Claude.")
+        elif debug:
+            print(f"  [gumtree] '{q}': {len(anchors)} tiles, "
+                  f"{found_here} usable")
+        time.sleep(5.0)      # gumtree rate-limits fast query bursts
+    return list(out.values())
+
+
+def fetch_gumtree_cycles(item_id: str) -> Optional[int]:
+    """Battery-cycle lookup from the full Gumtree ad page."""
+    try:
+        html = _http_get(f"https://www.gumtree.com/p/x/x/{item_id}",
+                         referer="https://www.gumtree.com/", lang="en-GB")
         text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
         return find_cycle_count(text)
     except Exception:
@@ -1129,7 +1509,7 @@ def scan_swappa(cfg, debug: bool = False) -> list[Listing]:
         keep.discard("mint")
     if not cfg.get("value", {}).get("enabled", True):
         keep.discard("good")
-    min_usd = int(s.get("min_price_usd", 400))
+    min_usd = min_price_for(cfg, "macbook", "usd")
     out: dict[str, Listing] = {}
     # the index page occasionally arrives half-rendered - retry it once
     models, idx = [], ""

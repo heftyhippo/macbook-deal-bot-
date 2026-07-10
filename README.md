@@ -1,21 +1,40 @@
-# MacBook Japan + US Deal Bot 🇯🇵🇺🇸💻
+# Apple Deal Bot 🍏 — Japan · US · UK · EU
 
-Scans **Mercari Japan**, **Yahoo! Auctions Japan**, **Rakuten Rakuma** (the
-marketplaces behind Buyee and ZenMarket), **eBay US**, **Swappa** and
-**eBay UK** for MacBook Pro listings (M2 Pro and newer) from **new/sealed
-down to lightly-used**, estimates the **full landed cost in GBP** (item +
-fees + shipping + UK import VAT where applicable), compares it against what
-the same model **in the same condition** costs in the UK, and tells you about
-the best deals — as **WhatsApp alerts** (UK/US deals at 35%+ savings, JP at
-50%+), and on a **dashboard website** with two views matching the two things
-the bot is for: **Buy for myself** (the most machine for the money, any
-condition) and **Resell for profit** (new/unused stock with the estimated
-flip profit worked out).
+Scans **ten markets** — Mercari Japan, Yahoo! Auctions, Rakuma and PayPay
+Flea Market (the marketplaces behind Buyee/ZenMarket), eBay US, Swappa,
+Craigslist, eBay UK, Gumtree and eBay Germany — for **near-new Apple
+hardware to resell at a profit**:
+
+- **MacBook Pro** 14"/16" (M2 Pro generation onwards)
+- **Mac mini** (M2/M4 gens), **Mac Studio** (all gens), **iMac 24"**
+  (M3/M4), **Mac Pro** (M2 Ultra)
+- **Apple Studio Display**
+- **iPad Pro** (M2/M4/M5) and **iPad Air** (the 2022+ models that average
+  over ~£500)
+
+Only **near-new stock** qualifies: new/unused (resale-grade) or like-new
+with zero visible wear. For every listing it estimates the **full landed
+cost in GBP** (item + proxy/forwarder fees + shipping scaled to the product
++ UK import VAT where applicable), compares it against the UK going rate,
+and surfaces the best finds — as **WhatsApp alerts** and on a **dashboard
+website** with two views: **Best flips** (ranked by estimated resale profit
+with ROI) and **Biggest savings** (ranked by the raw %-below-UK-average the
+alerts fire on).
 
 The dashboard is written to `deals.html` after every local scan — and if you
 follow **`CLOUD_SETUP.md`** (recommended, ~20 min once), GitHub's servers run
 the scan every 20 minutes for free and host the dashboard as a real website
 you can open from **any device, any time**, with your computer off.
+
+> **Why not Facebook Marketplace / OfferUp / Mercari US / Vinted?** All were
+> evaluated (July 2026). Facebook Marketplace sits behind a login wall —
+> scraping it requires an account session, breaches its terms and gets
+> accounts banned. OfferUp blocks all automated access outright and Mercari
+> US captchas every request. Vinted's electronics section needs a rotating
+> app session and stocks very few Macs. Craigslist and Gumtree made the cut
+> instead as the classifieds sources — with the caveat that classifieds have
+> **no buyer protection** and are mostly local-pickup: treat those finds as
+> leads to follow up, not one-click buys.
 
 > **How Yahoo Auctions is reached:** Yahoo! JAPAN has geo-blocked all visitors
 > from the UK and EEA since April 2022, so the bot searches **Buyee's mirror**
@@ -207,24 +226,24 @@ are still the only way to cover Swappa.
 
 ## 3. What the dashboard shows
 
-`deals.html` has **two views**, one per aim:
+`deals.html` has **two views**, both resale-first:
 
-- **🎯 Buy for myself** — every buyable listing from every market and every
-  condition tier, ranked by *price relative to condition* (the "best value"
-  scoring described below). This is where "the most MacBook for the money"
-  lives, whatever its condition grade.
-- **💰 Resell for profit** — new/unused stock only, ranked by **estimated
-  flip profit**: what's left after buying at the landed cost and reselling
-  at the UK average (minus a configurable ~5% selling friction — see
-  `resale:` in `config.yaml`). ROI% is shown alongside.
+- **💰 Best flips** — every near-new find (new/unused *or* like-new), ranked
+  by **estimated resale profit**: sell at the UK going rate for its
+  condition (new stock at the UK average, like-new stock at like-new money),
+  minus a configurable ~5% selling friction (`resale:` in `config.yaml`),
+  minus the landed cost. ROI% shown alongside.
+- **💸 Biggest savings** — the same stock ranked by the **raw saving**:
+  landed cost vs the UK average for a new unit. The exact number the
+  WhatsApp alerts fire on (★ rows clear your alert bar).
 
-Both views have search, model/market filters, "hide JIS keyboards",
-"hide auctions", an "alert-worthy only" switch (★ rows = deals that beat
-your WhatsApp alert bar), sortable columns, and NEW badges on listings that
-appeared since you last looked.
+Both views have search, product-family / model / market filters, "hide JIS
+keyboards", "hide auctions", an "alert-worthy only" switch, sortable
+columns, and NEW badges on listings that appeared since you last looked.
+Classifieds finds (Craigslist/Gumtree) carry a red no-buyer-protection chip.
 
-Under the hood, every listing is graded into one of three condition tiers —
-these drive the scoring and the alerts:
+Under the hood, every listing is graded into a condition tier — these drive
+the scoring and the alerts:
 
 1. **🏪 RESALE-GRADE — new / unopened / unused.** What the bot always hunted:
    sealed or never-used machines that can be resold as new-ish, so the deal
@@ -304,19 +323,24 @@ item price ($)
 That landed GBP figure is compared with the **UK average price** for the exact
 model (stored in `config.yaml`, see section 5). The difference is the **saving %**.
 
-**Alert thresholds** (changeable in `config.yaml` under `alerts: regions:`)
-are **per region**, because Japanese market prices genuinely run lower — a
-higher bar there keeps every buzz worth grabbing your phone for:
+**Alert thresholds** (changeable in `config.yaml` under `alerts:`) are
+**per region** and **split by whether the product ships with a keyboard**.
+JP prices genuinely run lower, so its bar is higher — but the *size* of that
+premium depends on the product: a Japanese MacBook or iMac carries a JIS
+keyboard (a real UK-resale handicap), while a Mac mini, Mac Studio, Studio
+Display or iPad from Japan is the identical product you'd buy here, so its
+foreign premium only covers forwarding hassle:
 
-| Region | 📣 WhatsApp alert | 🔥 "INCREDIBLE" | ⚠️ *suspiciously cheap* |
-|---|---|---|---|
-| 🇬🇧 eBay UK | **≥ 35%** | ≥ 40% | ≥ 50% |
-| 🇺🇸 eBay US / Swappa | **≥ 35%** | ≥ 40% | ≥ 50% |
-| 🇯🇵 Mercari / Yahoo / Rakuma | **≥ 50%** | ≥ 55% | ≥ 65% |
+| Region | MacBook / iMac 📣 | Keyboardless 📣 | 🔥 hot | ⚠️ *suspicious* |
+|---|---|---|---|---|
+| 🇬🇧 eBay UK / Gumtree | **≥ 35%** | **≥ 35%** | +5 | +15 |
+| 🇺🇸 eBay US / Swappa / Craigslist | **≥ 35%** | **≥ 35%** | +5 | +15 |
+| 🇩🇪 eBay Germany | **≥ 38%** | **≥ 35%** | +5 | +15 |
+| 🇯🇵 Mercari / Yahoo / Rakuma / PayPay | **≥ 50%** | **≥ 42%** | +5 | +15 |
 
-All percentages are savings on the **full landed cost** (fees, shipping and
-VAT included) vs the UK average. Deals below the alert bar still appear in
-the scan results and on the dashboard — they just don't buzz your phone.
+All percentages are savings on the **full landed cost** (fees, shipping
+scaled to the product, and VAT included) vs the UK average. Deals below the
+alert bar still appear on the dashboard — they just don't buzz your phone.
 The ⚠️ level still alerts, but flagged: likely a scam, box-only, or
 mis-listed item — read the listing very carefully.
 
@@ -421,6 +445,8 @@ better — it's your benchmark.
 | Scan finds 0 eBay US items | Occasional one-offs are normal (eBay serves several page layouts; the bot handles the known ones and retries once). If it *persists*, run `python macdeals.py scan --debug` and send `debug_ebay_us_*.html` to Claude. |
 | Swappa errors about patchright / Chrome | Swappa needs two things the other sources don't: `python3 -m pip install patchright`, and Google Chrome installed. No Chrome / no desktop session (e.g. a headless server) = Swappa gets skipped; everything else still works. |
 | Swappa "challenge did not clear" | Cloudflare escalated for your connection. Delete the `.swappa_chrome_profile` folder and rescan; if it persists, Swappa may have tightened things — run with `--debug` and send `debug_swappa_blocked.html` to Claude. |
+| Gumtree returns 0 / "HTTP 247" | Gumtree rate-limits query bursts aggressively. The bot already paces itself; if you scanned repeatedly in a short window, wait 15–30 min and it recovers on its own. |
+| Craigslist finds look unbuyable | That's the nature of the source: local pickup + cash, no shipping, no buyer protection. Treat them as leads (a US friend, or message the seller about posting) — the red chip on the dashboard reminds you. |
 | Yahoo/Buyee scan is slow on first query | Normal: the invisible browser solves Buyee's bot-check once (a few seconds), then the bot reuses the earned token at full speed. |
 | Lots of weird matches / misses | Check `queries:` in config — you can add/remove search phrases freely. |
 | Exchange rate shows "(fallback)" | The free FX API was unreachable; the bot used `fx.fallback_jpy_per_gbp` from config. Update that number occasionally. |
